@@ -1,6 +1,6 @@
 {
-  "app_name": "MyGame",
-  "game_exe": "game.exe",
+  "app_name": "Ta Tu",
+  "game_exe": "Ta Tu.exe",
   "game_args": [],
   "channels": ["stable", "beta"],
   "default_channel": "stable",
