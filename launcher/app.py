@@ -1,4 +1,9 @@
-"""หน้าต่าง Launcher (Tkinter) — รันด้วย:  python app.py"""
+"""หน้าต่าง Launcher (Tkinter) — รันด้วย:  python app.py
+
+หน้าตา: หน้าต่างไร้กรอบขนาด 1280x720 พื้นหลังเต็มจอ ชื่อเกมใหญ่ด้านซ้าย
+การ์ดข่าวกระจกฝ้ามุมซ้ายล่าง ปุ่มเหลืองทรงเม็ดยาที่มุมขวาล่าง
+ไอคอนตั้งค่า/ย่อ/ปิดมุมขวาบน — ทั้งหมดวาดบน Canvas ใบเดียว
+"""
 from __future__ import annotations
 
 import json
@@ -6,25 +11,47 @@ import queue
 import sys
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageTk
+
+import art
 import config
 import core
 
-BG, PANEL, FG, MUTED = "#0e1116", "#161b22", "#e6edf3", "#8b949e"
-ACCENT, ERR = "#f5c542", "#ff6b6b"
-W, BANNER_H = 900, 300
+W, H = art.W, art.H
+FONT = "Segoe UI"
+FG, MUTED, SOFT = "#ffffff", "#c9d6de", "#9fb4c0"
+ACCENT, ACCENT_HOVER, ERR = "#ffd900", "#ffe64d", "#ff8a8a"
+SHADOW = "#143244"
+PANEL, BG = "#161b22", "#0e1116"   # ใช้กับหน้าต่างตั้งค่า
+BTN = (935, 607, 1223, 663)        # ปุ่มหลัก (x1, y1, x2, y2)
+NEWS_ROWS = 3
+ROW_Y0, ROW_DY = 598, 24
+
+
+def pill(c: tk.Canvas, box, fill, tag):
+    """วาดทรงเม็ดยา (สี่เหลี่ยมมุมมนสุด) ด้วยวงกลม 2 ข้าง + แถบกลาง"""
+    x1, y1, x2, y2 = box
+    r = (y2 - y1) / 2
+    c.create_oval(x1, y1, x1 + 2 * r, y2, fill=fill, outline="", tags=tag)
+    c.create_oval(x2 - 2 * r, y1, x2, y2, fill=fill, outline="", tags=tag)
+    c.create_rectangle(x1 + r, y1, x2 - r, y2, fill=fill, outline="", tags=tag)
 
 
 class App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(f"{config.APP_NAME} Launcher  v{config.LAUNCHER_VERSION}")
-        self.root.geometry(f"{W}x560")
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.root.geometry(f"{W}x{H}+{max(0, (sw - W) // 2)}+{max(0, (sh - H) // 2 - 20)}")
         self.root.resizable(False, False)
         self.root.configure(bg=BG)
+        self.root.overrideredirect(True)          # ไร้กรอบ ลากย้ายเองได้
+        self.root.bind("<Map>", self.on_map)      # กลับมาไร้กรอบหลังย่อหน้าต่าง
 
         self.settings = core.Settings.load()
         self.q: queue.Queue = queue.Queue()
@@ -32,87 +59,220 @@ class App:
         self.busy = False
         self.mode = "start"       # start | retry | download
         self.mode_label = ""      # ข้อความบนปุ่มโหลด/อัปเดต
+        self.btn_enabled = False
         self.last_flow = (False, False)  # (repair, download) ของรอบล่าสุด ไว้ใช้ตอนกด "ลองใหม่"
         self.news: list = []
         self.news_idx = 0
+        self.status, self.status_color = "กำลังเริ่มต้น...", FG
+        self.detail = ""
+        self.progress: float | None = None
+        self.hits: list = []      # (x1, y1, x2, y2, ชื่อ, ฟังก์ชัน)
+        self.hover = ""
+        self._drag = None
 
-        self._build()
+        self.f_row = tkfont.Font(family=FONT, size=-15)
+        self.canvas = tk.Canvas(self.root, width=W, height=H, bg=BG, highlightthickness=0, bd=0)
+        self.canvas.pack()
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<Motion>", self.on_motion)
+        self.canvas.bind("<Leave>", lambda _e: self.set_hover(""))
+
+        self.bg_photo = None
+        self.bg_item = self.canvas.create_image(0, 0, anchor="nw")
+        self.set_background(self.load_cached_bg())
+        self.draw_title()
+        self.draw_dynamic()
+        self.draw_status()
+
         core.cleanup_old_launcher()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll)
         self.root.after(6000, self.rotate_news)
         self.start_flow()
 
-    # ------------------------------------------------------------ UI
-    def _build(self):
-        self.canvas = tk.Canvas(self.root, width=W, height=BANNER_H, bg=PANEL,
-                                highlightthickness=0, cursor="hand2")
-        self.canvas.pack()
-        self.canvas.bind("<Button-1>", self.on_banner_click)
-        self.draw_banner()
+    # ------------------------------------------------------------ พื้นหลัง
+    def load_cached_bg(self):
+        try:
+            with Image.open(core.data_dir() / "background.png") as im:
+                return im.convert("RGB")
+        except (OSError, ValueError):
+            return None
 
-        bottom = tk.Frame(self.root, bg=BG)
-        bottom.pack(fill="both", expand=True, padx=24, pady=16)
+    def set_background(self, img):
+        self.bg_photo = ImageTk.PhotoImage(art.compose_background(img))
+        self.canvas.itemconfig(self.bg_item, image=self.bg_photo)
 
-        left = tk.Frame(bottom, bg=BG)
-        left.pack(side="left", fill="both", expand=True)
-        self.status_var = tk.StringVar(value="กำลังเริ่มต้น...")
-        self.detail_var = tk.StringVar(value="")
-        self.status_lbl = tk.Label(left, textvariable=self.status_var, bg=BG, fg=FG,
-                                   font=("Segoe UI", 12, "bold"), anchor="w")
-        self.status_lbl.pack(fill="x")
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("A.Horizontal.TProgressbar", troughcolor=PANEL, background=ACCENT,
-                        bordercolor=PANEL, lightcolor=ACCENT, darkcolor=ACCENT)
-        self.pbar = ttk.Progressbar(left, style="A.Horizontal.TProgressbar", maximum=100)
-        self.pbar.pack(fill="x", pady=(10, 6))
-        tk.Label(left, textvariable=self.detail_var, bg=BG, fg=MUTED, font=("Segoe UI", 9),
-                 anchor="w").pack(fill="x")
+    # ------------------------------------------------------------ วาด
+    def text(self, x, y, s, size, fill=FG, bold=False, anchor="w", shadow=True, tags=""):
+        font = (FONT, -size, "bold") if bold else (FONT, -size)
+        if shadow:
+            self.canvas.create_text(x + 1, y + 2, text=s, anchor=anchor, fill=SHADOW, font=font,
+                                    tags=tags)
+        self.canvas.create_text(x, y, text=s, anchor=anchor, fill=fill, font=font, tags=tags)
 
-        small = tk.Frame(left, bg=BG)
-        small.pack(anchor="w", pady=(14, 0))
-        for text, cmd in (("ตั้งค่า", self.open_settings), ("ตรวจสอบ/ซ่อมแซมไฟล์", self.repair)):
-            tk.Button(small, text=text, command=cmd, bg=PANEL, fg=FG, bd=0, padx=12, pady=4,
-                      activebackground="#222a35", activeforeground=FG,
-                      font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
+    def draw_title(self):
+        self.text(60, 250, config.APP_NAME.upper(), 66, bold=True, tags="title")
+        sub = getattr(config, "SUBTITLE", "Play on Windows")  # ไม่ต้องแก้ config.py
+        if sub:
+            self.text(62, 303, sub, 25, bold=True, tags="title")
 
-        self.action_btn = tk.Button(bottom, text="เริ่มเกม", command=self.on_action, width=14,
-                                    font=("Segoe UI", 16, "bold"), bd=0, state="disabled",
-                                    bg=ACCENT, fg="#111", disabledforeground="#555",
-                                    activebackground="#ffd966")
-        self.action_btn.pack(side="right", padx=(20, 0), ipady=10)
+    def truncate(self, s: str, maxw: int) -> str:
+        if self.f_row.measure(s) <= maxw:
+            return s
+        while s and self.f_row.measure(s + "…") > maxw:
+            s = s[:-1]
+        return s + "…"
 
-    def draw_banner(self):
+    def draw_dynamic(self):
+        """ไอคอนมุมขวาบน + การ์ดข่าว + ปุ่มหลัก (วาดใหม่ทุกครั้งที่สถานะ/โฮเวอร์เปลี่ยน)"""
         c = self.canvas
-        c.delete("all")
+        c.delete("dyn")
+        self.hits = []
+        hv = self.hover
+
+        # ไอคอนมุมขวาบน: ตั้งค่า / ย่อ / ปิด
+        def icon_color(name):
+            return FG if hv == name else MUTED
+        col = icon_color("gear")
+        c.create_oval(1146, 23, 1164, 41, outline=col, width=2, tags="dyn")
+        c.create_oval(1151, 28, 1159, 36, outline=col, width=2, tags="dyn")
+        self.hits.append((1136, 14, 1174, 50, "gear", self.open_settings))
+        col = icon_color("min")
+        c.create_line(1190, 32, 1206, 32, fill=col, width=2, tags="dyn")
+        self.hits.append((1180, 14, 1216, 50, "min", self.minimize))
+        col = icon_color("close")
+        c.create_line(1235, 24, 1251, 40, fill=col, width=2, tags="dyn")
+        c.create_line(1251, 24, 1235, 40, fill=col, width=2, tags="dyn")
+        self.hits.append((1222, 14, 1262, 50, "close", self.on_close))
+
+        # การ์ดข่าว
+        x1, y1, x2, y2 = art.CARD
         item = self.news[self.news_idx] if self.news else None
-        if item and item.get("photo"):
-            c.create_image(0, 0, image=item["photo"], anchor="nw")
-        if item:
-            c.create_text(25, BANNER_H - 38, text=item["title"], anchor="w", fill="#000",
-                          font=("Segoe UI", 18, "bold"))
-            c.create_text(24, BANNER_H - 40, text=item["title"], anchor="w", fill="#fff",
-                          font=("Segoe UI", 18, "bold"))
-            for i in range(len(self.news)):
-                x = W - 25 - (len(self.news) - 1 - i) * 16
-                c.create_oval(x - 4, BANNER_H - 24, x + 4, BANNER_H - 16, outline="",
-                              fill=ACCENT if i == self.news_idx else "#555")
+        if item and item.get("thumb"):
+            c.create_image(x1, y1, image=item["thumb"], anchor="nw", tags="dyn")
         else:
-            c.create_text(W // 2, BANNER_H // 2, text=config.APP_NAME, fill=MUTED,
-                          font=("Segoe UI", 32, "bold"))
+            c.create_text((x1 + x2) // 2, y1 + art.THUMB_SIZE[1] // 2,
+                          text=(item["title"] if item else config.APP_NAME), fill=SOFT,
+                          font=(FONT, -22, "bold"), width=x2 - x1 - 40, tags="dyn")
+        if item:
+            self.hits.append((x1, y1, x2, y1 + art.THUMB_SIZE[1], "thumb",
+                              lambda i=self.news_idx: self.open_link(i)))
+        c.create_text(x1 + 8, 567, text="News", anchor="w", fill=FG, font=(FONT, -17, "bold"),
+                      tags="dyn")
+        c.create_line(x1 + 8, 583, x1 + 36, 583, fill=ACCENT, width=2, tags="dyn")
+        page = (self.news_idx // NEWS_ROWS) * NEWS_ROWS
+        for n, i in enumerate(range(page, min(page + NEWS_ROWS, len(self.news)))):
+            it = self.news[i]
+            y = ROW_Y0 + n * ROW_DY
+            name = f"row{i}"
+            col = FG if (hv == name or i == self.news_idx) else MUTED
+            date = it.get("date", "")
+            maxw = (x2 - x1) - 16 - 20 - (self.f_row.measure(date) + 14 if date else 0)
+            c.create_text(x1 + 10, y, text=self.truncate(it["title"], maxw), anchor="w",
+                          fill=col, font=(FONT, -15), tags="dyn")
+            if date:
+                c.create_text(x2 - 16, y, text=date, anchor="e", fill=SOFT, font=(FONT, -14),
+                              tags="dyn")
+            self.hits.append((x1 + 4, y - 11, x2 - 4, y + 11, name,
+                              lambda i=i: self.select_news(i)))
+
+        # ปุ่มหลัก
+        label = {"start": "เริ่มเกม", "retry": "ลองใหม่",
+                 "download": self.mode_label or "โหลดเกม"}[self.mode]
+        bx1, by1, bx2, by2 = BTN
+        if self.btn_enabled:
+            pill(c, (bx1, by1 + 4, bx2, by2 + 4), "#8a6f00", "dyn")
+            pill(c, BTN, ACCENT_HOVER if hv == "btn" else ACCENT, "dyn")
+            tcol = "#111111"
+        else:
+            pill(c, BTN, "#b9b08a", "dyn")
+            tcol = "#6b6650"
+        c.create_text((bx1 + bx2) // 2, (by1 + by2) // 2, text=label, fill=tcol,
+                      font=(FONT, -22, "bold"), tags="dyn")
+        self.hits.append((bx1, by1, bx2, by2, "btn", self.on_action))
+
+        # ลิงก์เล็กใต้ปุ่ม + เลขเวอร์ชัน
+        col = FG if hv == "repair" else SOFT
+        c.create_text((bx1 + bx2) // 2, 690, text="ตรวจสอบ/ซ่อมแซมไฟล์", fill=col,
+                      font=(FONT, -13, "underline" if hv == "repair" else "normal"), tags="dyn")
+        self.hits.append((bx1 + 60, 678, bx2 - 60, 702, "repair", self.repair))
+        c.create_text(W - 18, H - 12, text=f"Launcher v{config.LAUNCHER_VERSION}", anchor="e",
+                      fill=SOFT, font=(FONT, -11), tags="dyn")
+
+    def draw_status(self):
+        c = self.canvas
+        c.delete("stat")
+        x = 485
+        self.text(x, 622, self.status, 20, fill=self.status_color, bold=True, tags="stat")
+        if self.progress is not None:
+            w = 410
+            c.create_line(x, 648, x + w, 648, fill="#27495a", width=6, capstyle="round",
+                          tags="stat")
+            frac = max(0.0, min(1.0, self.progress))
+            if frac > 0:
+                c.create_line(x, 648, x + max(1, w * frac), 648, fill=ACCENT, width=6,
+                              capstyle="round", tags="stat")
+        if self.detail:
+            self.text(x, 667, self.detail, 13, fill=MUTED, tags="stat")
+
+    # ------------------------------------------------------------ เมาส์ / หน้าต่าง
+    def hit(self, x, y):
+        for x1, y1, x2, y2, name, cb in reversed(self.hits):
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return name, cb
+        return None
+
+    def set_hover(self, name):
+        if name != self.hover:
+            self.hover = name
+            self.draw_dynamic()
+
+    def on_motion(self, e):
+        h = self.hit(e.x, e.y)
+        name = h[0] if h else ""
+        if name == "btn" and not self.btn_enabled:
+            name = ""
+        self.canvas.config(cursor="hand2" if name else "")
+        self.set_hover(name)
+
+    def on_press(self, e):
+        h = self.hit(e.x, e.y)
+        if h:
+            self._drag = None
+            h[1]()
+        else:  # กดที่ว่าง = ลากย้ายหน้าต่าง
+            self._drag = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
+
+    def on_drag(self, e):
+        if self._drag:
+            self.root.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
+
+    def minimize(self):
+        self.root.overrideredirect(False)   # หน้าต่างไร้กรอบย่อไม่ได้ ต้องคืนกรอบชั่วคราว
+        self.root.iconify()
+
+    def on_map(self, e):
+        if e.widget is self.root and self.root.state() == "normal":
+            self.root.overrideredirect(True)
+
+    # ------------------------------------------------------------ ข่าว
+    def select_news(self, i):
+        self.news_idx = i
+        self.draw_dynamic()
+        self.open_link(i)
+
+    def open_link(self, i):
+        if 0 <= i < len(self.news):
+            link = self.news[i].get("link", "")
+            if link.startswith(("https://", "http://")):
+                webbrowser.open(link)
 
     def rotate_news(self):
         if len(self.news) > 1:
             self.news_idx = (self.news_idx + 1) % len(self.news)
-            self.draw_banner()
+            self.draw_dynamic()
         self.root.after(6000, self.rotate_news)
-
-    def on_banner_click(self, _e):
-        if self.news:
-            link = self.news[self.news_idx].get("link", "")
-            if link.startswith(("https://", "http://")):
-                webbrowser.open(link)
 
     # ------------------------------------------------------------ รับข้อความจาก worker
     def post(self, kind, arg=None):
@@ -129,31 +289,44 @@ class App:
 
     def set_action(self, mode, enabled):
         self.mode = mode
-        text = {"start": "เริ่มเกม", "retry": "ลองใหม่",
-                "download": self.mode_label or "โหลดเกม"}[mode]
-        self.action_btn.config(text=text, state="normal" if enabled else "disabled")
+        self.btn_enabled = enabled
+        self.draw_dynamic()
+
+    def set_status(self, text, color=FG, detail=None):
+        self.status, self.status_color = text, color
+        if detail is not None:
+            self.detail = detail
+        self.draw_status()
 
     def ev_status(self, text):
-        self.status_var.set(text)
-        self.status_lbl.config(fg=FG)
+        self.set_status(text)
 
     def ev_progress(self, arg):
         frac, detail = arg
-        self.pbar["value"] = max(0, min(1, frac)) * 100
-        self.detail_var.set(detail)
+        self.progress = frac
+        self.detail = detail
+        self.draw_status()
+
+    def ev_bg(self, path):
+        try:
+            with Image.open(path) as im:
+                self.set_background(im.convert("RGB"))
+        except (OSError, ValueError) as e:
+            core.log(f"ใช้พื้นหลังไม่ได้: {e}")
+        self.draw_dynamic()
 
     def ev_news(self, items):
         self.news = []
         for it in items:
-            photo = None
+            thumb = None
             if it.get("image_path"):
                 try:
-                    photo = tk.PhotoImage(file=it["image_path"])
-                except tk.TclError:
-                    photo = None
-            self.news.append({**it, "photo": photo})
+                    thumb = ImageTk.PhotoImage(art.make_thumb(it["image_path"]))
+                except (OSError, ValueError):
+                    thumb = None
+            self.news.append({**it, "thumb": thumb})
         self.news_idx = 0
-        self.draw_banner()
+        self.draw_dynamic()
 
     def ev_busy(self, flag):
         self.busy = flag
@@ -163,45 +336,42 @@ class App:
     def ev_ready(self, arg):
         version, offline = arg
         self.busy = False
-        self.pbar["value"] = 100
-        self.status_var.set(f"พร้อมเริ่มเกม v{version}" + (" (ออฟไลน์)" if offline else ""))
-        self.status_lbl.config(fg=FG)
-        self.detail_var.set("")
+        self.progress = None
+        self.set_status(f"พร้อมเริ่มเกม v{version}" + (" (ออฟไลน์)" if offline else ""), FG, "")
         self.set_action("start", True)
 
     def ev_need(self, arg):
         """ต้องโหลด/อัปเดตไฟล์เกม — รอให้ผู้เล่นกดเอง ยังไม่โหลดอะไรทั้งนั้น"""
         version, n_files, size, installed = arg
         self.busy = False
-        self.pbar["value"] = 0
-        self.status_lbl.config(fg=ACCENT)
+        self.progress = None
         if installed:
-            self.status_var.set(f"มีอัปเดตใหม่ v{version}")
             self.mode_label = "อัปเดตเกม"
+            title = f"มีอัปเดตใหม่ v{version}"
         else:
-            self.status_var.set(f"ยังไม่ได้ติดตั้งเกม (v{version})")
             self.mode_label = "โหลดเกม"
-        self.detail_var.set(f"{n_files} ไฟล์ • ขนาดดาวน์โหลดประมาณ {core.fmt_size(size)} "
-                            f"— กดปุ่มเพื่อเริ่มโหลด")
+            title = f"ยังไม่ได้ติดตั้งเกม (v{version})"
+        self.set_status(title, ACCENT,
+                        f"{n_files} ไฟล์ • ขนาดดาวน์โหลดประมาณ {core.fmt_size(size)} "
+                        f"— กดปุ่มเพื่อเริ่มโหลด")
         self.set_action("download", True)
 
     def ev_maint(self, msg):
         self.busy = False
-        self.status_var.set("ปิดปรับปรุงชั่วคราว")
-        self.status_lbl.config(fg=ACCENT)
-        self.detail_var.set(msg)
-        self.pbar["value"] = 0
+        self.progress = None
+        self.set_status("ปิดปรับปรุงชั่วคราว", ACCENT, msg)
         self.set_action("retry", True)
 
     def ev_error(self, msg):
         self.busy = False
-        self.status_var.set(msg)
-        self.status_lbl.config(fg=ERR)
-        self.detail_var.set("กด 'ลองใหม่' หรือดูรายละเอียดในไฟล์ launcher.log")
+        self.progress = None
+        self.set_status(msg, ERR, "กด 'ลองใหม่' หรือดูรายละเอียดในไฟล์ launcher.log")
         self.set_action("retry", True)
 
     # ------------------------------------------------------------ ปุ่มต่างๆ
     def on_action(self):
+        if not self.btn_enabled:
+            return
         if self.mode == "retry":
             self.start_flow(*self.last_flow)
             return
@@ -231,6 +401,7 @@ class App:
         win.configure(bg=BG, padx=20, pady=16)
         win.resizable(False, False)
         win.transient(self.root)
+        win.geometry(f"+{self.root.winfo_x() + 360}+{self.root.winfo_y() + 200}")
         win.grab_set()
 
         dir_var = tk.StringVar(value=self.settings.install_dir)
@@ -279,13 +450,26 @@ class App:
         self.last_flow = (repair, download)
         self.busy = True
         self.cancel = threading.Event()
-        self.pbar["value"] = 0
-        self.detail_var.set("")
+        self.progress = 0.0
+        self.detail = ""
+        self.draw_status()
         self.set_action(self.mode, False)
         threading.Thread(target=self.flow, args=(repair, download, self.cancel),
                          daemon=True).start()
 
+    def load_background(self):
+        """พื้นหลังโหลดจาก site/background.png ใน repo (เปลี่ยนรูปได้โดยไม่ต้อง build ใหม่)"""
+        try:
+            data = core.http_get(config.RAW_BASE + "background.png", bust_cache=True)
+            dest = core.data_dir() / "background.png"
+            if not dest.exists() or dest.read_bytes() != data:
+                dest.write_bytes(data)
+                self.post("bg", str(dest))
+        except Exception as e:  # noqa: BLE001
+            core.log(f"โหลดพื้นหลังไม่ได้: {e}")
+
     def load_news(self):
+        self.load_background()
         try:
             data = core.fetch_news()
             (core.data_dir() / "news_cache.json").write_text(
@@ -304,6 +488,7 @@ class App:
             except Exception as e:  # noqa: BLE001
                 core.log(f"โหลดแบนเนอร์ไม่ได้: {e}")
             items.append({"title": str(it.get("title", "")), "link": str(it.get("link", "")),
+                          "date": str(it.get("date", "")),
                           "image_path": str(path) if path else None})
         self.post("news", items)
 
