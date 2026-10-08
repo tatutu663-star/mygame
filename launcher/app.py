@@ -30,7 +30,9 @@ class App:
         self.q: queue.Queue = queue.Queue()
         self.cancel = threading.Event()
         self.busy = False
-        self.mode = "start"       # start | retry
+        self.mode = "start"       # start | retry | download
+        self.mode_label = ""      # ข้อความบนปุ่มโหลด/อัปเดต
+        self.last_flow = (False, False)  # (repair, download) ของรอบล่าสุด ไว้ใช้ตอนกด "ลองใหม่"
         self.news: list = []
         self.news_idx = 0
 
@@ -127,8 +129,9 @@ class App:
 
     def set_action(self, mode, enabled):
         self.mode = mode
-        self.action_btn.config(text="เริ่มเกม" if mode == "start" else "ลองใหม่",
-                               state="normal" if enabled else "disabled")
+        text = {"start": "เริ่มเกม", "retry": "ลองใหม่",
+                "download": self.mode_label or "โหลดเกม"}[mode]
+        self.action_btn.config(text=text, state="normal" if enabled else "disabled")
 
     def ev_status(self, text):
         self.status_var.set(text)
@@ -166,6 +169,22 @@ class App:
         self.detail_var.set("")
         self.set_action("start", True)
 
+    def ev_need(self, arg):
+        """ต้องโหลด/อัปเดตไฟล์เกม — รอให้ผู้เล่นกดเอง ยังไม่โหลดอะไรทั้งนั้น"""
+        version, n_files, size, installed = arg
+        self.busy = False
+        self.pbar["value"] = 0
+        self.status_lbl.config(fg=ACCENT)
+        if installed:
+            self.status_var.set(f"มีอัปเดตใหม่ v{version}")
+            self.mode_label = "อัปเดตเกม"
+        else:
+            self.status_var.set(f"ยังไม่ได้ติดตั้งเกม (v{version})")
+            self.mode_label = "โหลดเกม"
+        self.detail_var.set(f"{n_files} ไฟล์ • ขนาดดาวน์โหลดประมาณ {core.fmt_size(size)} "
+                            f"— กดปุ่มเพื่อเริ่มโหลด")
+        self.set_action("download", True)
+
     def ev_maint(self, msg):
         self.busy = False
         self.status_var.set("ปิดปรับปรุงชั่วคราว")
@@ -184,7 +203,10 @@ class App:
     # ------------------------------------------------------------ ปุ่มต่างๆ
     def on_action(self):
         if self.mode == "retry":
-            self.start_flow()
+            self.start_flow(*self.last_flow)
+            return
+        if self.mode == "download":
+            self.start_flow(download=True)
             return
         try:
             core.launch_game(Path(self.settings.install_dir))
@@ -199,7 +221,7 @@ class App:
             return
         if messagebox.askyesno(config.APP_NAME, "ตรวจสอบไฟล์ทั้งหมดและโหลดใหม่เฉพาะไฟล์ที่เสีย?\n"
                                                 "อาจใช้เวลาสักครู่"):
-            self.start_flow(repair=True)
+            self.start_flow(repair=True, download=True)
 
     def open_settings(self):
         if self.busy:
@@ -249,15 +271,19 @@ class App:
         self.root.destroy()
 
     # ------------------------------------------------------------ ขั้นตอนอัปเดต (รันใน thread)
-    def start_flow(self, repair=False):
+    def start_flow(self, repair=False, download=False):
+        """download=False: เช็กอย่างเดียว (ตอนเปิดโปรแกรม) ไม่โหลดไฟล์เกม
+        download=True : ผู้เล่นกดโหลด/อัปเดต/ซ่อมแซมเอง ถึงจะโหลดจริง"""
         if self.busy:
             return
+        self.last_flow = (repair, download)
         self.busy = True
         self.cancel = threading.Event()
         self.pbar["value"] = 0
         self.detail_var.set("")
         self.set_action(self.mode, False)
-        threading.Thread(target=self.flow, args=(repair, self.cancel), daemon=True).start()
+        threading.Thread(target=self.flow, args=(repair, download, self.cancel),
+                         daemon=True).start()
 
     def load_news(self):
         try:
@@ -281,7 +307,7 @@ class App:
                           "image_path": str(path) if path else None})
         self.post("news", items)
 
-    def flow(self, repair: bool, cancel: threading.Event):
+    def flow(self, repair: bool, download: bool, cancel: threading.Event):
         s = self.settings
         root = Path(s.install_dir)
         try:
@@ -346,6 +372,13 @@ class App:
                 manifest, root, state, full_verify=repair,
                 on_scan=lambda i, n: self.post("progress", (i / n if n else 1,
                                                             f"ตรวจไฟล์ {i}/{n}")))
+            if todo and not download:
+                # ยังไม่โหลดอะไร — แจ้งขนาดแล้วรอผู้เล่นกดปุ่มเอง
+                jobs = core.build_jobs(manifest, todo)
+                size = sum(j.pack["size"] for j in jobs)
+                self.post("need", (manifest["game_version"], len(todo), size,
+                                   core.installed_ok(root)))
+                return
             if todo:
                 jobs = core.build_jobs(manifest, todo)
                 core.check_disk_space(root, jobs)
