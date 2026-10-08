@@ -1,0 +1,95 @@
+name: Build launcher
+
+# วิธีใช้: แท็บ Actions → "Build launcher" → Run workflow → ใส่เวอร์ชัน (เช่น 1.0.0)
+# (หรือจะ push tag  launcher-1.0.0  ก็ได้)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "เวอร์ชัน Launcher เช่น 1.0.0"
+        required: true
+  push:
+    tags: ["launcher-*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-meta
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare (version + build_info)
+        id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then V="$INPUT_VERSION"; else V="${GITHUB_REF_NAME#launcher-}"; fi
+          V="${V#v}"
+          if ! echo "$V" | grep -Eq '^[0-9]+(\.[0-9]+){1,3}$'; then
+            echo "เวอร์ชันไม่ถูกต้อง: '$V' (ต้องเป็นตัวเลข เช่น 1.0.0)"; exit 1
+          fi
+          NAME=$(python -c "import json,re;print(re.sub(r'[^A-Za-z0-9_-]','',json.load(open('config.json',encoding='utf-8'))['app_name']) or 'Game')")
+          MIN=$(python -c "import json;print(json.load(open('config.json',encoding='utf-8')).get('min_launcher_version','1.0.0'))")
+          printf 'REPO = "%s"\nBRANCH = "%s"\nVERSION = "%s"\n' "$GITHUB_REPOSITORY" "$BRANCH" "$V" > launcher/build_info.py
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "min=$MIN" >> "$GITHUB_OUTPUT"
+
+      - name: Build exe
+        shell: bash
+        run: |
+          pip install -r launcher/requirements.txt pyinstaller
+          pyinstaller --onefile --windowed --name "${{ steps.v.outputs.name }}-Launcher-${{ steps.v.outputs.version }}" \
+            --add-data "config.json;." --distpath dist --paths launcher launcher/app.py
+
+      - name: Publish (release + meta)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+          NAME: ${{ steps.v.outputs.name }}
+          MIN: ${{ steps.v.outputs.min }}
+        run: |
+          EXE="dist/${NAME}-Launcher-${V}.exe"
+          python tools/make_launcher_json.py --exe "$EXE" --version "$V" \
+            --repo "$GITHUB_REPOSITORY" --min-supported "$MIN" --out dist
+
+          # 1) ไฟล์ของเวอร์ชันนี้ (ลิงก์ที่ launcher.json อ้างอิง)
+          if gh release view "launcher-$V" >/dev/null 2>&1; then
+            gh release upload "launcher-$V" "$EXE" --clobber
+          else
+            gh release create "launcher-$V" "$EXE" --target "$GITHUB_SHA" \
+              --title "Launcher $V" --notes "Launcher v$V"
+          fi
+
+          # 2) Release "meta" — ที่ที่ Launcher ของผู้เล่นอ่านข้อมูล (สร้างครั้งแรกอัตโนมัติ)
+          gh release view meta >/dev/null 2>&1 || gh release create meta --prerelease \
+            --target "$GITHUB_SHA" --title "meta (ห้ามลบ)" \
+            --notes "ไฟล์ที่ Launcher อ่าน สร้าง/อัปเดตอัตโนมัติ ห้ามลบหรือแก้เอง"
+
+          # ลิงก์ดาวน์โหลดถาวรสำหรับผู้เล่นใหม่ (ชื่อไฟล์ไม่มีเลขเวอร์ชัน)
+          cp "$EXE" "dist/${NAME}-Launcher.exe"
+          # อัปโหลด launcher.json เป็นอันสุดท้าย เพื่อไม่ให้ชี้ไปที่ไฟล์ที่ยังไม่พร้อม
+          gh release upload meta "dist/${NAME}-Launcher.exe" --clobber
+          gh release upload meta dist/launcher.json --clobber
+
+          {
+            echo "### ✅ Launcher v$V พร้อมแล้ว"
+            echo ""
+            echo "ลิงก์ดาวน์โหลดสำหรับแจกผู้เล่น (ใช้ได้ถาวร อัปเดตเองทุกครั้งที่ build ใหม่):"
+            echo ""
+            echo "https://github.com/$GITHUB_REPOSITORY/releases/download/meta/${NAME}-Launcher.exe"
+          } >> "$GITHUB_STEP_SUMMARY"

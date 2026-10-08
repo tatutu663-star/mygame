@@ -1,0 +1,47 @@
+name: Publish game
+
+# ทำงานอัตโนมัติเมื่อเผยแพร่/แก้/ลบ Release ที่ tag เป็น  stable-1.2.0 / beta-1.3.0
+# (กดรันเองได้จากแท็บ Actions ถ้าอัปโหลดไฟล์เพิ่มใน Release ที่เผยแพร่ไปแล้ว)
+
+on:
+  release:
+    types: [published, edited, deleted]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-meta
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    if: github.event_name != 'release' || github.event.release.tag_name != 'meta'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: Build manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/build_manifest.py --out dist
+
+      - name: Upload to meta release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ls dist/*.json >/dev/null 2>&1; then
+            gh release view meta >/dev/null 2>&1 || gh release create meta --prerelease \
+              --target "$GITHUB_SHA" --title "meta (ห้ามลบ)" \
+              --notes "ไฟล์ที่ Launcher อ่าน สร้าง/อัปเดตอัตโนมัติ ห้ามลบหรือแก้เอง"
+            gh release upload meta dist/*.json --clobber
+          else
+            echo "ไม่มี manifest ให้อัปโหลด"
+          fi

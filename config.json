@@ -1,0 +1,8 @@
+{
+  "app_name": "MyGame",
+  "game_exe": "game.exe",
+  "game_args": [],
+  "channels": ["stable", "beta"],
+  "default_channel": "stable",
+  "min_launcher_version": "1.0.0"
+}
