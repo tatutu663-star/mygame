@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -656,14 +657,34 @@ def installed_ok(root: Path) -> bool:
         return False
 
 
+def record_launcher_path() -> None:
+    """จดที่อยู่ Launcher (.exe) ไว้ให้เกมอ่าน — ถ้าผู้เล่นเปิดเกมตรงๆ เกมจะใช้ไฟล์นี้เรียก Launcher ขึ้นมา"""
+    if not is_frozen():
+        return
+    try:
+        (data_dir() / "launcher_path.txt").write_text(str(Path(sys.executable).resolve()), "utf-8")
+    except OSError as e:
+        log(f"จดที่อยู่ Launcher ไม่ได้: {e}")
+
+
+def make_launch_token() -> str:
+    """โทเคนแนบตอนเปิดเกม รูปแบบ  <unix-time>.<hmac-sha256-hex>  (เกมตรวจด้วยความลับเดียวกัน)"""
+    ts = str(int(time.time()))
+    mac = hmac.new(config.LAUNCH_SECRET.encode("utf-8"), ts.encode("ascii"), hashlib.sha256)
+    return f"{ts}.{mac.hexdigest()}"
+
+
 def launch_game(root: Path) -> None:
     exe = safe_join(root, config.GAME_EXE)
     if not exe.is_file():
         raise LauncherError(f"ไม่พบไฟล์เกม: {config.GAME_EXE}")
+    if not config.LAUNCH_SECRET:
+        raise LauncherError("ยังไม่ได้ตั้ง launch_secret ใน config.json")
     kw = {}
     if sys.platform == "win32":
         kw["creationflags"] = 0x00000008  # DETACHED_PROCESS
+    args = [str(exe)] + list(config.GAME_ARGS) + ["-launcherToken", make_launch_token()]
     try:
-        subprocess.Popen([str(exe)] + list(config.GAME_ARGS), cwd=str(root), close_fds=True, **kw)
+        subprocess.Popen(args, cwd=str(root), close_fds=True, **kw)
     except OSError as e:
         raise LauncherError(f"เปิดเกมไม่ได้: {e}")
