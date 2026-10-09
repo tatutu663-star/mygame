@@ -2,5 +2,6 @@
   "items": [
     {"title": "test", "image": "banners/welcome.png", "link": "https://youtu.be/gUpOEmKf7bM"},
     {"title": "the biggest cornballs on the internet", "image": "banners/event.png", "link": "https://youtu.be/gUpOEmKf7bM"}
+    {"title": "test", "image": "banners/event.png", "link": ""}
   ]
 }
