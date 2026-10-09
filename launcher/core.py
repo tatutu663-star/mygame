@@ -674,17 +674,88 @@ def make_launch_token() -> str:
     return f"{ts}.{mac.hexdigest()}"
 
 
+_game_proc = None  # Popen ของเกมที่ Launcher เปิดเอง (กันกดซ้ำช่วงที่เกมเพิ่งเริ่มและยังไม่โผล่ในรายการโปรเซส)
+
+
+def _find_game_process(exe: Path) -> bool:
+    """Windows: ไล่รายการโปรเซสหาไฟล์เกมตัวนี้ (ชื่อตรง และพาธตรงกับที่ติดตั้ง)"""
+    import ctypes
+    from ctypes import wintypes
+
+    class ENTRY(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ENTRY)]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    invalid = ctypes.c_void_p(-1).value
+    snap = k.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snap in (None, invalid):
+        return False
+    want = os.path.normcase(os.path.realpath(exe))
+    try:
+        e = ENTRY()
+        e.dwSize = ctypes.sizeof(ENTRY)
+        ok = k.Process32FirstW(snap, ctypes.byref(e))
+        while ok:
+            if e.szExeFile.lower() == exe.name.lower():
+                h = k.OpenProcess(0x1000, False, e.th32ProcessID)  # PROCESS_QUERY_LIMITED_INFORMATION
+                if not h:
+                    return True  # เปิดอ่านพาธไม่ได้ แต่ชื่อตรง ถือว่าเกมรันอยู่
+                try:
+                    buf = ctypes.create_unicode_buffer(1024)
+                    size = wintypes.DWORD(len(buf))
+                    if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                        if os.path.normcase(os.path.realpath(buf.value)) == want:
+                            return True
+                    else:
+                        return True
+                finally:
+                    k.CloseHandle(h)
+            ok = k.Process32NextW(snap, ctypes.byref(e))
+    finally:
+        k.CloseHandle(snap)
+    return False
+
+
+def is_game_running(root: Path) -> bool:
+    """เกมที่ติดตั้งในโฟลเดอร์นี้กำลังทำงานอยู่หรือไม่ (เปิดจาก Launcher หรือเปิดเองก็นับ)"""
+    if _game_proc is not None and _game_proc.poll() is None:
+        return True
+    if sys.platform != "win32":
+        return False
+    try:
+        return _find_game_process(safe_join(root, config.GAME_EXE))
+    except (OSError, AttributeError, ValueError) as e:
+        log(f"เช็กโปรเซสเกมไม่ได้: {e}")
+        return False
+
+
 def launch_game(root: Path) -> None:
+    global _game_proc
     exe = safe_join(root, config.GAME_EXE)
     if not exe.is_file():
         raise LauncherError(f"ไม่พบไฟล์เกม: {config.GAME_EXE}")
     if not config.LAUNCH_SECRET:
         raise LauncherError("ยังไม่ได้ตั้ง launch_secret ใน config.json")
+    if is_game_running(root):
+        raise LauncherError("เกมเปิดอยู่แล้ว")
     kw = {}
     if sys.platform == "win32":
         kw["creationflags"] = 0x00000008  # DETACHED_PROCESS
     args = [str(exe)] + list(config.GAME_ARGS) + ["-launcherToken", make_launch_token()]
     try:
-        subprocess.Popen(args, cwd=str(root), close_fds=True, **kw)
+        _game_proc = subprocess.Popen(args, cwd=str(root), close_fds=True, **kw)
     except OSError as e:
         raise LauncherError(f"เปิดเกมไม่ได้: {e}")
