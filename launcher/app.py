@@ -675,7 +675,7 @@ class App:
         if self.busy:
             return
         win = tk.Toplevel(self.root)
-        win.title("ตั้งค่า")
+        win.title("Setting")
         win.configure(bg=BG, padx=20, pady=16)
         win.resizable(False, False)
         win.transient(self.root)
