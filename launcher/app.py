@@ -78,6 +78,8 @@ class App:
         self.mode = "start"       # start | retry | download
         self.mode_label = ""      # ข้อความบนปุ่มโหลด/อัปเดต
         self.btn_enabled = False
+        self.game_running = False
+        self.ready_text = ""      # ข้อความ "พร้อมเริ่มเกม" ไว้คืนค่าหลังเกมปิด
         self.last_flow = (False, False)  # (repair, download) ของรอบล่าสุด ไว้ใช้ตอนกด "ลองใหม่"
         self.news: list = []
         self.news_idx = 0
@@ -109,6 +111,7 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll)
         self.root.after(6000, self.rotate_news)
+        self.root.after(1500, self.tick_game)
         self.start_flow()
 
     # ------------------------------------------------------------ พื้นหลัง
@@ -198,8 +201,8 @@ class App:
                               lambda i=i: self.select_news(i)))
 
         # ปุ่มหลัก
-        label = {"start": "เริ่มเกม", "retry": "ลองใหม่",
-                 "download": self.mode_label or "โหลดเกม"}[self.mode]
+        label = {"start": "กำลังเล่นอยู่" if self.game_running else "เริ่มเกม",
+                 "retry": "ลองใหม่", "download": self.mode_label or "โหลดเกม"}[self.mode]
         bx1, by1, bx2, by2 = BTN
         if self.btn_enabled:
             pill(c, (bx1, by1 + 4, bx2, by2 + 4), "#8a6f00", "dyn")
@@ -333,8 +336,32 @@ class App:
 
     def set_action(self, mode, enabled):
         self.mode = mode
-        self.btn_enabled = enabled
+        # เกมกำลังรัน: ห้ามกดเริ่มซ้ำ และห้ามโหลด/อัปเดต (ไฟล์เกมถูกล็อกอยู่)
+        self.btn_enabled = enabled and not (self.game_running and mode in ("start", "download"))
         self.draw_dynamic()
+
+    def refresh_running_ui(self):
+        """ปรับสถานะตามว่าเกมรันอยู่หรือไม่ (เรียกหลัง set_action ทุกครั้งที่เป็นโหมด start)"""
+        if self.busy or self.mode != "start":
+            return
+        if self.game_running:
+            self.set_status("เกมกำลังทำงานอยู่", ACCENT, "ปิดเกมก่อนถึงจะเริ่มใหม่หรืออัปเดตได้")
+        else:
+            self.set_status(self.ready_text, FG, "")
+
+    def tick_game(self):
+        """เช็กทุก 1.5 วินาทีว่าเกมยังรันอยู่ไหม — เกมปิดเมื่อไหร่ปุ่มกลับมากดได้เอง"""
+        try:
+            running = core.is_game_running(Path(self.settings.install_dir))
+        except Exception as e:  # noqa: BLE001
+            core.log(f"tick_game: {e}")
+            running = self.game_running
+        if running != self.game_running:
+            self.game_running = running
+            if not self.busy and self.mode in ("start", "download"):
+                self.set_action(self.mode, True)
+                self.refresh_running_ui()
+        self.root.after(1500, self.tick_game)
 
     def set_status(self, text, color=FG, detail=None):
         self.status, self.status_color = text, color
@@ -381,8 +408,10 @@ class App:
         version, offline = arg
         self.busy = False
         self.progress = None
-        self.set_status(f"พร้อมเริ่มเกม v{version}" + (" (ออฟไลน์)" if offline else ""), FG, "")
+        self.ready_text = f"พร้อมเริ่มเกม v{version}" + (" (ออฟไลน์)" if offline else "")
+        self.set_status(self.ready_text, FG, "")
         self.set_action("start", True)
+        self.refresh_running_ui()
 
     def ev_need(self, arg):
         """ต้องโหลด/อัปเดตไฟล์เกม — รอให้ผู้เล่นกดเอง ยังไม่โหลดอะไรทั้งนั้น"""
@@ -427,6 +456,9 @@ class App:
         except core.LauncherError as e:
             messagebox.showerror(config.APP_NAME, str(e))
             return
+        self.game_running = True
+        self.set_action("start", True)
+        self.refresh_running_ui()
         if self.settings.close_on_launch:
             self.root.after(800, self.root.destroy)
 
@@ -490,6 +522,9 @@ class App:
         """download=False: เช็กอย่างเดียว (ตอนเปิดโปรแกรม) ไม่โหลดไฟล์เกม
         download=True : ผู้เล่นกดโหลด/อัปเดต/ซ่อมแซมเอง ถึงจะโหลดจริง"""
         if self.busy:
+            return
+        if download and core.is_game_running(Path(self.settings.install_dir)):
+            messagebox.showinfo(config.APP_NAME, "เกมกำลังทำงานอยู่ กรุณาปิดเกมก่อนโหลด/อัปเดต/ซ่อมแซมไฟล์")
             return
         self.last_flow = (repair, download)
         self.busy = True
