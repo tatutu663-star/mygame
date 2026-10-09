@@ -26,7 +26,7 @@ import core
 
 W, H = art.W, art.H
 FONT = "Segoe UI"
-FG, MUTED, SOFT = "#ffffff", "#c9d6de", "#9fb4c0"
+FG, MUTED, SOFT = "#ffffff", "#ffffff", "#ffffff"
 ACCENT, ACCENT_HOVER, ERR = "#ffd900", "#ffe64d", "#ff8a8a"
 SHADOW = "#143244"
 PANEL, BG = "#161b22", "#0e1116"   # ใช้กับหน้าต่างตั้งค่า
