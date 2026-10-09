@@ -45,13 +45,23 @@ ICON_IDLE_ALPHA = 0.78  # ความทึบตอนปกติ (ตอน�
 ICON_EXTS = (".png", ".webp", ".ico")
 
 
+def icon_dir() -> Path:
+    """โฟลเดอร์ icons/ — ไม่ต้องพึ่ง config.py (ใช้ค่าจาก config ถ้ามี ไม่งั้นหาเอง)"""
+    d = getattr(config, "ICON_DIR", None)
+    if d:
+        return Path(d)
+    if getattr(sys, "frozen", False):   # ตอนเป็น .exe (PyInstaller)
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "icons"
+    return Path(__file__).resolve().parent.parent / "icons"
+
+
 def load_top_icons() -> dict:
     """โหลดไอคอนจาก icons/  คืน {ชื่อ: (รูปปกติ, รูปตอนโฮเวอร์)} เฉพาะอันที่มีไฟล์
 
     ชื่อไฟล์: gear.png, minimize.png, close.png
     (ถ้าอยากให้โฮเวอร์เป็นอีกรูป ใส่ gear_hover.png ฯลฯ ได้ ไม่ใส่ก็ใช้รูปเดียวกันแล้วปรับความสว่างให้)
     """
-    folder = config.ICON_DIR
+    folder = icon_dir()
     out = {}
 
     def find(stem):
