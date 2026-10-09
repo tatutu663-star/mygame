@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import queue
 import sys
@@ -42,8 +43,19 @@ def pill(c: tk.Canvas, box, fill, tag):
     c.create_rectangle(x1 + r, y1, x2 - r, y2, fill=fill, outline="", tags=tag)
 
 
+def set_app_id():
+    """Windows: แยกกลุ่มแถบงานของเราออกจาก python.exe ไอคอนจะได้เป็นของ Launcher"""
+    if sys.platform == "win32":
+        try:
+            name = "".join(ch for ch in config.APP_NAME if ch.isalnum()) or "Game"
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"{name}.Launcher")
+        except (AttributeError, OSError):
+            pass
+
+
 class App:
     def __init__(self):
+        set_app_id()
         self.root = tk.Tk()
         self.root.title(f"{config.APP_NAME} Launcher  v{config.LAUNCHER_VERSION}")
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
@@ -56,7 +68,8 @@ class App:
             self.root.iconphoto(True, *self.icons)
         except (tk.TclError, OSError):
             pass
-        self.root.bind("<Map>", self.on_map)      # กลับมาไร้กรอบหลังย่อหน้าต่าง
+        if sys.platform != "win32":
+            self.root.bind("<Map>", self.on_map)  # กลับมาไร้กรอบหลังย่อหน้าต่าง
 
         self.settings = core.Settings.load()
         self.q: queue.Queue = queue.Queue()
@@ -90,6 +103,7 @@ class App:
         self.draw_dynamic()
         self.draw_status()
 
+        self.root.after(50, self.show_in_taskbar)
         core.cleanup_old_launcher()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll)
@@ -253,8 +267,32 @@ class App:
         if self._drag:
             self.root.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
 
+    def hwnd(self):
+        return ctypes.windll.user32.GetParent(self.root.winfo_id())
+
+    def show_in_taskbar(self):
+        """หน้าต่างไร้กรอบ (overrideredirect) ปกติไม่ขึ้นแถบงาน — บังคับให้เป็น App window"""
+        if sys.platform != "win32":
+            return
+        try:
+            u = ctypes.windll.user32
+            GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW = -20, 0x00040000, 0x00000080
+            h = self.hwnd()
+            style = u.GetWindowLongW(h, GWL_EXSTYLE)
+            u.SetWindowLongW(h, GWL_EXSTYLE, (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW)
+            self.root.withdraw()                  # ต้องซ่อน-แสดงใหม่ Windows ถึงอัปเดตแถบงาน
+            self.root.after(20, self.root.deiconify)
+        except (AttributeError, OSError) as e:
+            core.log(f"ตั้งค่าไอคอนแถบงานไม่ได้: {e}")
+
     def minimize(self):
-        self.root.overrideredirect(False)   # หน้าต่างไร้กรอบย่อไม่ได้ ต้องคืนกรอบชั่วคราว
+        if sys.platform == "win32":
+            try:
+                ctypes.windll.user32.ShowWindow(self.hwnd(), 6)  # SW_MINIMIZE
+                return
+            except (AttributeError, OSError):
+                pass
+        self.root.overrideredirect(False)   # ระบบอื่น: คืนกรอบชั่วคราวแล้วย่อ
         self.root.iconify()
 
     def on_map(self, e):
