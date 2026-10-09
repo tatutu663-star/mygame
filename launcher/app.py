@@ -105,6 +105,7 @@ class App:
 
         self.root.after(50, self.show_in_taskbar)
         core.cleanup_old_launcher()
+        core.record_launcher_path()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll)
         self.root.after(6000, self.rotate_news)
