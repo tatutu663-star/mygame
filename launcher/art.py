@@ -93,3 +93,20 @@ def make_thumb(path, size=THUMB_SIZE, radius=CARD_RADIUS) -> Image.Image:
     mask = _rounded_mask(size, radius, corners=(True, True, False, False))
     im.putalpha(ImageChops.multiply(im.getchannel("A"), mask))
     return im
+
+
+def make_icon(size: int = 256) -> Image.Image:
+    """ไอคอนแอป: สี่เหลี่ยมมุมมนไล่สีฟ้าอมเขียว + สามเหลี่ยมเล่นสีเหลือง (วาดเอง ไม่ต้องมีไฟล์รูป)"""
+    k = 4                       # วาดใหญ่แล้วย่อ ให้ขอบเรียบ
+    s = size * k
+    bg = Image.new("RGB", (s, s))
+    d = ImageDraw.Draw(bg)
+    top, bottom = (74, 138, 162), (22, 58, 78)
+    for y in range(s):
+        t = y / (s - 1)
+        d.line([(0, y), (s, y)], fill=tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3)))
+    icon = bg.convert("RGBA")
+    ImageDraw.Draw(icon).polygon([(s * 0.38, s * 0.28), (s * 0.38, s * 0.72), (s * 0.74, s * 0.5)],
+                                 fill=(255, 217, 0, 255))
+    icon.putalpha(_rounded_mask((s, s), int(s * 0.22)))
+    return icon.resize((size, size), Image.LANCZOS)
