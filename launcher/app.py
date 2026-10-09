@@ -136,7 +136,7 @@ class App:
 
     def draw_title(self):
         self.text(60, 250, config.APP_NAME.upper(), 66, bold=True, tags="title")
-        sub = getattr(config, "SUBTITLE", "Play on Windows")  # ไม่ต้องแก้ config.py
+        sub = getattr(config, "SUBTITLE", "")  # ไม่ต้องแก้ config.py
         if sub:
             self.text(62, 303, sub, 25, bold=True, tags="title")
 
