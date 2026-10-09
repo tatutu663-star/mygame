@@ -20,6 +20,7 @@ _cfg = json.loads((_base_dir() / "config.json").read_text("utf-8"))
 APP_NAME = _cfg["app_name"]
 GAME_EXE = _cfg["game_exe"]
 GAME_ARGS = list(_cfg.get("game_args", []))
+LAUNCH_SECRET = str(_cfg.get("launch_secret", ""))  # ต้องตรงกับค่าใน LauncherGate.cs ของ Unity
 CHANNELS = list(_cfg.get("channels", ["stable"]))
 DEFAULT_CHANNEL = _cfg.get("default_channel", CHANNELS[0])
 
