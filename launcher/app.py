@@ -33,6 +33,58 @@ BTN = (935, 607, 1223, 663)        # ปุ่มหลัก (x1, y1, x2, y2)
 NEWS_ROWS = 3
 ROW_Y0, ROW_DY = 598, 24
 
+# ไอคอนมุมขวาบน: ชื่อ -> (กล่องคลิก x1,y1,x2,y2, ชื่อไฟล์ที่ใช้หา)
+# วางรูปไว้ที่โฟลเดอร์ icons/ (รากโปรเจกต์) ถ้าไม่มีไฟล์จะวาดไอคอนแบบเดิมให้เอง
+TOP_ICONS = {
+    "gear":  ((1136, 14, 1174, 50), ("gear", "settings", "setting")),
+    "min":   ((1180, 14, 1216, 50), ("minimize", "min")),
+    "close": ((1222, 14, 1262, 50), ("close", "exit")),
+}
+ICON_SIZE = 24          # ขนาดรูปไอคอนที่แสดง (px) — ปรับได้
+ICON_IDLE_ALPHA = 0.78  # ความทึบตอนปกติ (ตอนโฮเวอร์จะ 100%) ใช้เมื่อไม่มีไฟล์ *_hover
+ICON_EXTS = (".png", ".webp", ".ico")
+
+
+def load_top_icons() -> dict:
+    """โหลดไอคอนจาก icons/  คืน {ชื่อ: (รูปปกติ, รูปตอนโฮเวอร์)} เฉพาะอันที่มีไฟล์
+
+    ชื่อไฟล์: gear.png, minimize.png, close.png
+    (ถ้าอยากให้โฮเวอร์เป็นอีกรูป ใส่ gear_hover.png ฯลฯ ได้ ไม่ใส่ก็ใช้รูปเดียวกันแล้วปรับความสว่างให้)
+    """
+    folder = config.ICON_DIR
+    out = {}
+
+    def find(stem):
+        for ext in ICON_EXTS:
+            f = folder / f"{stem}{ext}"
+            if f.is_file():
+                return f
+        return None
+
+    def prep(path):
+        with Image.open(path) as im:
+            im = im.convert("RGBA")
+        return im.resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
+
+    for name, (_box, stems) in TOP_ICONS.items():
+        try:
+            base = next((f for st in stems if (f := find(st))), None)
+            if base is None:
+                continue
+            normal = prep(base)
+            hov_file = next((f for st in stems if (f := find(st + "_hover"))), None)
+            if hov_file:
+                hover = prep(hov_file)
+            else:
+                hover = normal
+                a = normal.getchannel("A").point(lambda v: int(v * ICON_IDLE_ALPHA))
+                normal = normal.copy()
+                normal.putalpha(a)
+            out[name] = (ImageTk.PhotoImage(normal), ImageTk.PhotoImage(hover))
+        except (OSError, ValueError, tk.TclError):
+            continue   # ไฟล์เสีย -> ใช้ไอคอนวาดเอง
+    return out
+
 
 def pill(c: tk.Canvas, box, fill, tag):
     """วาดทรงเม็ดยา (สี่เหลี่ยมมุมมนสุด) ด้วยวงกลม 2 ข้าง + แถบกลาง"""
@@ -98,6 +150,8 @@ class App:
         self.canvas.bind("<Motion>", self.on_motion)
         self.canvas.bind("<Leave>", lambda _e: self.set_hover(""))
 
+        self.top_icons = load_top_icons()   # เก็บไว้ในตัวแปร ไม่งั้น Tkinter ทิ้งรูป
+
         self.bg_photo = None
         self.bg_item = self.canvas.create_image(0, 0, anchor="nw")
         self.set_background(self.load_cached_bg())
@@ -154,20 +208,30 @@ class App:
         self.hits = []
         hv = self.hover
 
-        # ไอคอนมุมขวาบน: ตั้งค่า / ย่อ / ปิด
+        # ไอคอนมุมขวาบน: ตั้งค่า / ย่อ / ปิด  (ใช้รูปจาก icons/ ถ้ามี ไม่งั้นวาดเอง)
         def icon_color(name):
             return FG if hv == name else MUTED
-        col = icon_color("gear")
-        c.create_oval(1146, 23, 1164, 41, outline=col, width=2, tags="dyn")
-        c.create_oval(1151, 28, 1159, 36, outline=col, width=2, tags="dyn")
-        self.hits.append((1136, 14, 1174, 50, "gear", self.open_settings))
-        col = icon_color("min")
-        c.create_line(1190, 32, 1206, 32, fill=col, width=2, tags="dyn")
-        self.hits.append((1180, 14, 1216, 50, "min", self.minimize))
-        col = icon_color("close")
-        c.create_line(1235, 24, 1251, 40, fill=col, width=2, tags="dyn")
-        c.create_line(1251, 24, 1235, 40, fill=col, width=2, tags="dyn")
-        self.hits.append((1222, 14, 1262, 50, "close", self.on_close))
+
+        def draw_fallback(name):
+            col = icon_color(name)
+            if name == "gear":
+                c.create_oval(1146, 23, 1164, 41, outline=col, width=2, tags="dyn")
+                c.create_oval(1151, 28, 1159, 36, outline=col, width=2, tags="dyn")
+            elif name == "min":
+                c.create_line(1190, 32, 1206, 32, fill=col, width=2, tags="dyn")
+            else:
+                c.create_line(1235, 24, 1251, 40, fill=col, width=2, tags="dyn")
+                c.create_line(1251, 24, 1235, 40, fill=col, width=2, tags="dyn")
+
+        actions = {"gear": self.open_settings, "min": self.minimize, "close": self.on_close}
+        for name, (box, _stems) in TOP_ICONS.items():
+            if name in self.top_icons:
+                cx, cy = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+                normal, hover = self.top_icons[name]
+                c.create_image(cx, cy, image=hover if hv == name else normal, tags="dyn")
+            else:
+                draw_fallback(name)
+            self.hits.append((*box, name, actions[name]))
 
         # การ์ดข่าว
         x1, y1, x2, y2 = art.CARD
