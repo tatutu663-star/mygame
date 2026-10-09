@@ -15,6 +15,8 @@ def _base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+ICON_DIR = _base_dir() / "icons"   # ไอคอนปุ่มมุมขวาบน: gear.png / minimize.png / close.png
+
 _cfg = json.loads((_base_dir() / "config.json").read_text("utf-8"))
 
 APP_NAME = _cfg["app_name"]
