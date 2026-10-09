@@ -51,6 +51,11 @@ class App:
         self.root.resizable(False, False)
         self.root.configure(bg=BG)
         self.root.overrideredirect(True)          # ไร้กรอบ ลากย้ายเองได้
+        try:                                      # ไอคอนหน้าต่าง/แถบงาน (วาดจาก art.make_icon)
+            self.icons = [ImageTk.PhotoImage(art.make_icon(n)) for n in (16, 32, 48, 256)]
+            self.root.iconphoto(True, *self.icons)
+        except (tk.TclError, OSError):
+            pass
         self.root.bind("<Map>", self.on_map)      # กลับมาไร้กรอบหลังย่อหน้าต่าง
 
         self.settings = core.Settings.load()
