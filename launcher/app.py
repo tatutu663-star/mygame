@@ -11,6 +11,7 @@ import json
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
@@ -30,8 +31,13 @@ ACCENT, ACCENT_HOVER, ERR = "#ffd900", "#ffe64d", "#ff8a8a"
 SHADOW = "#143244"
 PANEL, BG = "#161b22", "#0e1116"   # ใช้กับหน้าต่างตั้งค่า
 BTN = (935, 607, 1223, 663)        # ปุ่มหลัก (x1, y1, x2, y2)
-NEWS_ROWS = 3
+NEWS_ROWS = 3                       # จำนวนบรรทัดข่าวที่เห็นพร้อมกัน (เลื่อนดูที่เหลือได้)
 ROW_Y0, ROW_DY = 598, 24
+_CFG = getattr(config, "_cfg", {}) or {}
+NEWS_MAX = max(1, int(_CFG.get("news_max", 30)))                      # ข่าวสูงสุดที่แสดง
+NEWS_REFRESH = max(10, int(_CFG.get("news_refresh_seconds", 30)))     # เช็กข่าวใหม่ทุกกี่วินาที
+NEWS_PAUSE = 20                     # ผู้เล่นเลื่อน/กดข่าวแล้ว หยุดสไลด์อัตโนมัติกี่วินาที
+SB_Y1, SB_Y2 = 590, 654             # ช่วงแนวตั้งของแถบเลื่อน
 
 # ไอคอนมุมขวาบน: ชื่อ -> (กล่องคลิก x1,y1,x2,y2, ชื่อไฟล์ที่ใช้หา)
 # วางรูปไว้ที่โฟลเดอร์ icons/ (รากโปรเจกต์) ถ้าไม่มีไฟล์จะวาดไอคอนแบบเดิมให้เอง
@@ -151,6 +157,14 @@ class App:
         self.hits: list = []      # (x1, y1, x2, y2, ชื่อ, ฟังก์ชัน)
         self.hover = ""
         self._drag = None
+        self._sb_drag = None      # จุดที่จับแถบเลื่อนอยู่ (None = ไม่ได้ลาก)
+        self.news_top = 0         # ข่าวบรรทัดแรกที่เห็นในลิสต์
+        self._news_pause = 0.0    # เวลา (time.time) ที่สไลด์อัตโนมัติจะกลับมาทำงาน
+        self._news_sig = None     # ลายเซ็นของ news.json ล่าสุด ไว้เทียบว่ามีข่าวเปลี่ยนไหม
+        self._news_err = ""
+        self._news_lock = threading.Lock()
+        self._banner_cache: dict = {}   # เนื้อ item -> path รูปที่โหลดแล้ว
+        self._thumb_cache: dict = {}    # path -> PhotoImage
 
         self.f_row = tkfont.Font(family=FONT, size=-15)
         self.canvas = tk.Canvas(self.root, width=W, height=H, bg=BG, highlightthickness=0, bd=0)
@@ -159,6 +173,12 @@ class App:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<Motion>", self.on_motion)
         self.canvas.bind("<Leave>", lambda _e: self.set_hover(""))
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<MouseWheel>", self.on_wheel)                 # Windows / macOS
+        self.canvas.bind("<Button-4>", self.on_wheel)                   # Linux
+        self.canvas.bind("<Button-5>", self.on_wheel)
+        self.root.bind_all("<Up>", lambda _e: self.step_news(-1))
+        self.root.bind_all("<Down>", lambda _e: self.step_news(1))
 
         self.top_icons = load_top_icons()   # เก็บไว้ในตัวแปร ไม่งั้น Tkinter ทิ้งรูป
 
@@ -175,6 +195,7 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll)
         self.root.after(6000, self.rotate_news)
+        self.root.after(NEWS_REFRESH * 1000, self.poll_news)
         self.root.after(1500, self.tick_game)
         self.start_flow()
 
@@ -258,21 +279,41 @@ class App:
         c.create_text(x1 + 8, 567, text="News", anchor="w", fill=FG, font=(FONT, -17, "bold"),
                       tags="dyn")
         c.create_line(x1 + 8, 583, x1 + 36, 583, fill=ACCENT, width=2, tags="dyn")
-        page = (self.news_idx // NEWS_ROWS) * NEWS_ROWS
-        for n, i in enumerate(range(page, min(page + NEWS_ROWS, len(self.news)))):
+        n = len(self.news)
+        if n > 1:
+            c.create_text(x2 - 14, 567, text=f"{self.news_idx + 1}/{n}", anchor="e", fill=SOFT,
+                          font=(FONT, -13), tags="dyn")
+        self.news_top = max(0, min(self.news_top, max(0, n - NEWS_ROWS)))
+        scroll = n > NEWS_ROWS
+        right = x2 - (26 if scroll else 16)          # ขอบขวาของข้อความ (เว้นที่ให้แถบเลื่อน)
+        for k, i in enumerate(range(self.news_top, min(self.news_top + NEWS_ROWS, n))):
             it = self.news[i]
-            y = ROW_Y0 + n * ROW_DY
+            y = ROW_Y0 + k * ROW_DY
             name = f"row{i}"
-            col = FG if (hv == name or i == self.news_idx) else MUTED
+            sel = i == self.news_idx
+            col = FG if (hv == name or sel) else MUTED
             date = it.get("date", "")
-            maxw = (x2 - x1) - 16 - 20 - (self.f_row.measure(date) + 14 if date else 0)
+            maxw = (right - (x1 + 10)) - (self.f_row.measure(date) + 14 if date else 0)
+            if sel:
+                c.create_line(x1 + 5, y - 8, x1 + 5, y + 8, fill=ACCENT, width=2, tags="dyn")
             c.create_text(x1 + 10, y, text=self.truncate(it["title"], maxw), anchor="w",
                           fill=col, font=(FONT, -15), tags="dyn")
             if date:
-                c.create_text(x2 - 16, y, text=date, anchor="e", fill=SOFT, font=(FONT, -14),
+                c.create_text(right, y, text=date, anchor="e", fill=SOFT, font=(FONT, -14),
                               tags="dyn")
-            self.hits.append((x1 + 4, y - 11, x2 - 4, y + 11, name,
+            self.hits.append((x1 + 4, y - 11, right + 6, y + 11, name,
                               lambda i=i: self.select_news(i)))
+
+        # แถบเลื่อน (โผล่เมื่อข่าวมากกว่าที่แสดงได้) — ลาก/คลิกราง/ใช้ลูกกลิ้งเมาส์ได้
+        if scroll:
+            sx = x2 - 11
+            c.create_line(sx, SB_Y1, sx, SB_Y2, fill="#5d7a8a", width=3, capstyle="round",
+                          tags="dyn")
+            t1, t2 = self.sb_thumb()
+            on = hv == "sbar" or self._sb_drag is not None
+            c.create_line(sx, t1 + 3, sx, t2 - 3, fill=ACCENT if on else SOFT, width=6,
+                          capstyle="round", tags="dyn")
+            self.hits.append((x2 - 22, SB_Y1 - 4, x2 - 2, SB_Y2 + 4, "sbar", lambda: None))
 
         # ปุ่มหลัก
         label = {"start": "กำลังเล่นอยู่" if self.game_running else "เริ่มเกม",
@@ -335,14 +376,24 @@ class App:
 
     def on_press(self, e):
         h = self.hit(e.x, e.y)
-        if h:
+        if h and h[0] == "sbar":
+            self._drag = None
+            self.sb_press(e.y)
+        elif h:
             self._drag = None
             h[1]()
         else:  # กดที่ว่าง = ลากย้ายหน้าต่าง
             self._drag = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
 
+    def on_release(self, _e):
+        if self._sb_drag is not None:
+            self._sb_drag = None
+            self.draw_dynamic()
+
     def on_drag(self, e):
-        if self._drag:
+        if self._sb_drag is not None:
+            self.sb_set(e.y)
+        elif self._drag:
             self.root.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
 
     def hwnd(self):
@@ -380,6 +431,7 @@ class App:
     # ------------------------------------------------------------ ข่าว
     def select_news(self, i):
         self.news_idx = i
+        self.hold_rotation()
         self.draw_dynamic()
         self.open_link(i)
 
@@ -389,11 +441,76 @@ class App:
             if link.startswith(("https://", "http://")):
                 webbrowser.open(link)
 
+    def hold_rotation(self):
+        """ผู้เล่นกำลังใช้งานลิสต์ข่าว — พักสไลด์อัตโนมัติสักครู่ ไม่ให้ข่าวเด้งหนี"""
+        self._news_pause = time.time() + NEWS_PAUSE
+
     def rotate_news(self):
-        if len(self.news) > 1:
+        if len(self.news) > 1 and time.time() >= self._news_pause and self._sb_drag is None:
             self.news_idx = (self.news_idx + 1) % len(self.news)
+            self.ensure_visible(self.news_idx)
             self.draw_dynamic()
         self.root.after(6000, self.rotate_news)
+
+    def ensure_visible(self, i):
+        if i < self.news_top:
+            self.news_top = i
+        elif i >= self.news_top + NEWS_ROWS:
+            self.news_top = i - NEWS_ROWS + 1
+
+    def scroll_news(self, d):
+        top = max(0, min(self.news_top + d, max(0, len(self.news) - NEWS_ROWS)))
+        self.hold_rotation()
+        if top != self.news_top:
+            self.news_top = top
+            self.draw_dynamic()
+
+    def step_news(self, d):
+        """ปุ่มลูกศรขึ้น/ลง: เลื่อนข่าวที่เลือกทีละอัน (ไม่เปิดลิงก์)"""
+        if len(self.news) > 1:
+            self.news_idx = (self.news_idx + d) % len(self.news)
+            self.ensure_visible(self.news_idx)
+            self.hold_rotation()
+            self.draw_dynamic()
+
+    def on_wheel(self, e):
+        x1, y1, x2, y2 = art.CARD
+        if not (x1 <= e.x <= x2 and y1 <= e.y <= y2):
+            return
+        up = getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0
+        self.scroll_news(-1 if up else 1)
+
+    # แถบเลื่อน
+    def sb_thumb(self):
+        n = len(self.news)
+        track = SB_Y2 - SB_Y1
+        size = max(18, track * NEWS_ROWS / max(n, 1))
+        span = max(1, n - NEWS_ROWS)
+        t1 = SB_Y1 + (track - size) * (self.news_top / span)
+        return t1, t1 + size
+
+    def sb_press(self, y):
+        t1, t2 = self.sb_thumb()
+        self.hold_rotation()
+        if t1 - 3 <= y <= t2 + 3:
+            self._sb_drag = y - t1                # จับที่ตัวเลื่อน
+        else:
+            self._sb_drag = (t2 - t1) / 2         # คลิกที่ราง: กระโดดไปตรงนั้นแล้วลากต่อได้
+        self.sb_set(y)
+
+    def sb_set(self, y):
+        t1, t2 = self.sb_thumb()
+        room = (SB_Y2 - SB_Y1) - (t2 - t1)
+        top_max = max(0, len(self.news) - NEWS_ROWS)
+        frac = 0 if room <= 0 else (y - self._sb_drag - SB_Y1) / room
+        self.news_top = max(0, min(top_max, round(frac * top_max)))
+        self.hold_rotation()
+        self.draw_dynamic()
+
+    # อัปเดตข่าวแบบเรียลไทม์: เช็ก news.json เป็นระยะ ถ้าเปลี่ยนค่อยโหลดรูป/วาดใหม่
+    def poll_news(self):
+        threading.Thread(target=self.refresh_news, daemon=True).start()
+        self.root.after(NEWS_REFRESH * 1000, self.poll_news)
 
     # ------------------------------------------------------------ รับข้อความจาก worker
     def post(self, kind, arg=None):
@@ -461,16 +578,27 @@ class App:
         self.draw_dynamic()
 
     def ev_news(self, items):
-        self.news = []
+        """รับรายการข่าวใหม่ — คงข่าวที่ผู้เล่นเลือก/ตำแหน่งที่เลื่อนอยู่ไว้ถ้ายังมีอยู่"""
+        def key(it):
+            return (it.get("title"), it.get("link"), it.get("image_path"))
+        old = key(self.news[self.news_idx]) if self.news else None
+        news = []
         for it in items:
-            thumb = None
-            if it.get("image_path"):
+            path = it.get("image_path")
+            thumb = self._thumb_cache.get(path) if path else None
+            if path and thumb is None:
                 try:
-                    thumb = ImageTk.PhotoImage(art.make_thumb(it["image_path"]))
+                    thumb = ImageTk.PhotoImage(art.make_thumb(path))
+                    self._thumb_cache[path] = thumb
                 except (OSError, ValueError):
                     thumb = None
-            self.news.append({**it, "thumb": thumb})
-        self.news_idx = 0
+            news.append({**it, "thumb": thumb})
+        keep = {it.get("image_path") for it in items}
+        for p in [p for p in self._thumb_cache if p not in keep]:
+            del self._thumb_cache[p]
+        self.news = news
+        self.news_idx = next((i for i, it in enumerate(news) if key(it) == old), 0)
+        self.ensure_visible(self.news_idx)
         self.draw_dynamic()
 
     def ev_busy(self, flag):
@@ -623,27 +751,63 @@ class App:
 
     def load_news(self):
         self.load_background()
+        self.refresh_news(first=True)
+
+    def refresh_news(self, first: bool = False):
+        """โหลด news.json แล้วส่งขึ้น UI เฉพาะตอนที่เนื้อหาเปลี่ยน (first=True: ใช้แคชถ้าเน็ตล่ม)"""
+        if not self._news_lock.acquire(blocking=False):
+            return                                  # กำลังโหลดอยู่แล้ว
         try:
-            data = core.fetch_news()
-            (core.data_dir() / "news_cache.json").write_text(
-                json.dumps(data, ensure_ascii=False), "utf-8")
-        except Exception as e:  # noqa: BLE001
-            core.log(f"โหลดข่าวไม่ได้: {e}")
+            cache_file = core.data_dir() / "news_cache.json"
+            sig = None
             try:
-                data = json.loads((core.data_dir() / "news_cache.json").read_text("utf-8"))
-            except (OSError, ValueError):
-                return
-        items = []
-        for it in data.get("items", [])[:8]:
-            path = None
-            try:
-                path = core.fetch_banner(it)
+                data = core.fetch_news()
+                sig = json.dumps(data, sort_keys=True, ensure_ascii=False)
+                self._news_err = ""
             except Exception as e:  # noqa: BLE001
-                core.log(f"โหลดแบนเนอร์ไม่ได้: {e}")
-            items.append({"title": str(it.get("title", "")), "link": str(it.get("link", "")),
-                          "date": str(it.get("date", "")),
-                          "image_path": str(path) if path else None})
-        self.post("news", items)
+                if str(e) != self._news_err:        # ไม่ log ซ้ำทุกรอบ
+                    core.log(f"โหลดข่าวไม่ได้: {e}")
+                    self._news_err = str(e)
+                if not first:
+                    return                          # ข่าวเดิมยังแสดงต่อไป
+                try:
+                    data = json.loads(cache_file.read_text("utf-8"))
+                except (OSError, ValueError):
+                    return
+            if sig is not None:
+                if sig == self._news_sig:
+                    return                          # ไม่มีอะไรเปลี่ยน
+                try:
+                    cache_file.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+                except OSError:
+                    pass
+            raw = data.get("items", [])
+            if not isinstance(raw, list):
+                return
+            items = []
+            for it in raw:
+                if not isinstance(it, dict):
+                    continue
+                if len(items) >= NEWS_MAX:
+                    break
+                ck = json.dumps(it, sort_keys=True, ensure_ascii=False)
+                path = self._banner_cache.get(ck)
+                if path is None:                    # โหลดรูปเฉพาะข่าวที่ใหม่/แก้ไข
+                    try:
+                        p = core.fetch_banner(it)
+                        path = str(p) if p else None
+                    except Exception as e:  # noqa: BLE001
+                        core.log(f"โหลดแบนเนอร์ไม่ได้: {e}")
+                        path = None
+                    if path:
+                        self._banner_cache[ck] = path
+                items.append({"title": str(it.get("title", "")), "link": str(it.get("link", "")),
+                              "date": str(it.get("date", "")), "image_path": path})
+            if sig is not None:
+                self._news_sig = sig
+            self.post("news", items)
+        finally:
+            self._news_lock.release()
 
     def flow(self, repair: bool, download: bool, cancel: threading.Event):
         s = self.settings
