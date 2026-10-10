@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import requests
+import assetbox
 import config
 
 CHUNK = 256 * 1024
@@ -206,17 +207,34 @@ def fetch_news() -> dict:
 
 
 def fetch_banner(item: dict) -> Path | None:
-    """โหลดรูปแบนเนอร์ลงแคช (ชื่อไฟล์แคชผูกกับ hash ของเนื้อหา จึงไม่โหลดซ้ำถ้ารูปไม่เปลี่ยน)"""
+    """โหลดรูปแบนเนอร์ลงแคช (เข้ารหัสเป็น .dat เปิดดูด้วยโปรแกรมดูรูปไม่ได้)
+    ชื่อไฟล์แคชผูกกับ hash ของเนื้อหา จึงไม่โหลดซ้ำถ้ารูปไม่เปลี่ยน"""
     rel = item.get("image")
     if not rel or not isinstance(rel, str) or ".." in Path(rel).parts:
         return None
     data = http_get(config.RAW_BASE + rel, bust_cache=True)
     cache = data_dir() / "banners"
     cache.mkdir(exist_ok=True)
-    dest = cache / f"{hashlib.sha256(data).hexdigest()[:24]}.png"
-    if not dest.exists():
-        dest.write_bytes(data)
+    dest = cache / f"{hashlib.sha256(data).hexdigest()[:24]}.dat"
+    if assetbox.read_sealed(dest) is None:  # ยังไม่มี หรือไฟล์เสีย/ถูกแก้ -> เขียนใหม่
+        assetbox.write_sealed(dest, data)
     return dest
+
+
+def purge_legacy_images() -> None:
+    """ลบรูปแคชแบบเก่าที่เป็น .png เปิดดูได้ (Launcher รุ่นก่อนเก็บไว้) — เรียกตอนเปิดโปรแกรม"""
+    d = data_dir()
+    try:
+        (d / "background_1.png").unlink(missing_ok=True)
+    except OSError:
+        pass
+    banners = d / "banners"
+    if banners.is_dir():
+        for f in banners.glob("*.png"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
 
 
 def _need(cond, msg="รูปแบบ manifest ไม่ถูกต้อง"):
@@ -542,15 +560,41 @@ def check_launcher_update() -> dict | None:
     return None
 
 
-def cleanup_old_launcher() -> None:
-    if not is_frozen():
-        return
+def _old_launcher_files() -> list:
     exe = Path(sys.executable)
-    for suf in (".old", ".new"):
+    return [exe.with_name(exe.name + suf) for suf in (".old", ".new")]
+
+
+def cleanup_old_launcher() -> bool:
+    """ลบ Launcher ตัวเก่า (.old) และไฟล์ดาวน์โหลดค้าง (.new) — คืน True เมื่อไม่เหลืออะไรแล้ว"""
+    if not is_frozen():
+        return True
+    left = False
+    for f in _old_launcher_files():
         try:
-            exe.with_name(exe.name + suf).unlink()
+            f.unlink(missing_ok=True)
         except OSError:
-            pass
+            left = True  # ตัวเก่ายังปิดตัวไม่เสร็จ (Windows ลบไฟล์ที่กำลังรันไม่ได้) ไว้ลองใหม่
+    return not left
+
+
+def start_cleanup_old_launcher(max_wait: float = 120) -> None:
+    """ลบตัวเก่าแบบลองซ้ำเบื้องหลัง
+    ตอนอัปเดต Launcher ตัวเก่ายังรันค้างอีกหลายวินาทีหลังเปิดตัวใหม่ จึงลบตอนเริ่มโปรแกรมทันทีไม่ได้
+    (แต่ก่อนปล่อยทิ้งไว้จนผู้เล่นเปิด Launcher ครั้งถัดไป)"""
+    if not is_frozen() or cleanup_old_launcher():
+        return
+
+    def worker():
+        deadline = time.monotonic() + max_wait
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            if cleanup_old_launcher():
+                log("ลบ Launcher ตัวเก่าแล้ว")
+                return
+        log("ลบ Launcher ตัวเก่าไม่ได้ (จะลองใหม่ตอนเปิดครั้งหน้า)")
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def _terminate() -> None:  # แยกเป็นฟังก์ชันเพื่อให้ทดสอบได้
