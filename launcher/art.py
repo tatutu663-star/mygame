@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
+import assetbox
+
 W, H = 1280, 720
 CARD = (57, 365, 441, 658)   # x1, y1, x2, y2 ของการ์ดข่าว
 CARD_RADIUS = 14
@@ -88,15 +90,22 @@ def compose_background(bg: Image.Image | None) -> Image.Image:
 
 def make_thumb(path, size=THUMB_SIZE, radius=CARD_RADIUS) -> Image.Image:
     """รูปข่าวขนาดเท่าด้านบนของการ์ด มุมบนมน มุมล่างเหลี่ยม"""
-    with Image.open(path) as im:
-        im = cover(im, *size).convert("RGBA")
+    im = cover(assetbox.read_image(path), *size).convert("RGBA")  # ไฟล์แคชถูกเข้ารหัส
     mask = _rounded_mask(size, radius, corners=(True, True, False, False))
     im.putalpha(ImageChops.multiply(im.getchannel("A"), mask))
     return im
 
 
+def app_icon(size: int = 256) -> Image.Image:
+    """ไอคอนแอปจากรูปที่ฝังไว้ (assets_blob.py) — ถ้าไม่มีใช้ไอคอนที่วาดเอง"""
+    im = assetbox.embedded_image("app")
+    if im is None:
+        return make_icon(size)
+    return im.convert("RGBA").resize((size, size), Image.LANCZOS)
+
+
 def make_icon(size: int = 256) -> Image.Image:
-    """ไอคอนแอป: สี่เหลี่ยมมุมมนไล่สีฟ้าอมเขียว + สามเหลี่ยมเล่นสีเหลือง (วาดเอง ไม่ต้องมีไฟล์รูป)"""
+    """ไอคอนแอปสำรอง: สี่เหลี่ยมมุมมนไล่สีฟ้าอมเขียว + สามเหลี่ยมเล่นสีเหลือง (วาดเอง ไม่ต้องมีไฟล์รูป)"""
     k = 4                       # วาดใหญ่แล้วย่อ ให้ขอบเรียบ
     s = size * k
     bg = Image.new("RGB", (s, s))
