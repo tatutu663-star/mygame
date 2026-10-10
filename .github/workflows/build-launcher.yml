@@ -52,7 +52,9 @@ jobs:
         shell: bash
         run: |
           pip install -r launcher/requirements.txt pyinstaller
-          pyinstaller --onefile --windowed --name "${{ steps.v.outputs.name }}-Launcher-${{ steps.v.outputs.version }}" \
+          # เข้ารหัสรูป (icons/, icon.ico) ฝังเข้า .exe เป็นโค้ด — ไม่แนบไฟล์รูปไปกับตัวโปรแกรม
+          python tools/pack_assets.py
+          pyinstaller --onefile --windowed --icon icon.ico --hidden-import assets_blob --name "${{ steps.v.outputs.name }}-Launcher-${{ steps.v.outputs.version }}" \
             --add-data "config.json;." --distpath dist --paths launcher launcher/app.py
 
       - name: Publish (release + meta)
