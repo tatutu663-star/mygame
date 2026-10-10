@@ -741,8 +741,8 @@ class App:
     def load_background(self):
         """พื้นหลังโหลดจาก site/background.png ใน repo (เปลี่ยนรูปได้โดยไม่ต้อง build ใหม่)"""
         try:
-            data = core.http_get(config.RAW_BASE + "background.png", bust_cache=True)
-            dest = core.data_dir() / "background.png"
+            data = core.http_get(config.RAW_BASE + "background_1.png", bust_cache=True)
+            dest = core.data_dir() / "background_1.png"
             if not dest.exists() or dest.read_bytes() != data:
                 dest.write_bytes(data)
                 self.post("bg", str(dest))
