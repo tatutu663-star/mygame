@@ -1,7 +1,7 @@
 {
   "items": [
     {"title": "test", "image": "banners/br_test.png", "link": "https://youtu.be/gUpOEmKf7bM"},
-    {"title": "the biggest cornballs on the internet", "image": "banners/br_test.png", "link": "https://youtu.be/gUpOEmKf7bM"},
+    {"title": "the biggest cornballs on the internet", "image": "banners/br_test.png", "link": ""},
     {"title": "test", "image": "banners/br_test.png", "link": ""},
     {"title": "test", "image": "banners/br_test.png", "link": ""}
   ]
