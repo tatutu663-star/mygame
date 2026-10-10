@@ -30,6 +30,10 @@ def png_bytes(im: Image.Image) -> bytes:
 
 
 def main() -> int:
+    try:  # Windows (cp1252) พิมพ์ภาษาไทยไม่ได้ ทำให้สคริปต์ล้ม
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     items = {}
     if ICON_DIR.is_dir():
         for f in sorted(ICON_DIR.iterdir()):
