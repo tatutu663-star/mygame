@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ctypes
+import io
 import json
 import queue
 import sys
@@ -21,6 +22,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 import art
+import assetbox
 import config
 import core
 
@@ -52,53 +54,56 @@ ICON_EXTS = (".png", ".webp", ".ico")
 
 
 def icon_dir() -> Path:
-    """โฟลเดอร์ icons/ — ไม่ต้องพึ่ง config.py (ใช้ค่าจาก config ถ้ามี ไม่งั้นหาเอง)"""
-    d = getattr(config, "ICON_DIR", None)
-    if d:
-        return Path(d)
-    if getattr(sys, "frozen", False):   # ตอนเป็น .exe (PyInstaller)
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "icons"
-    return Path(__file__).resolve().parent.parent / "icons"
+    """โฟลเดอร์ icons/ — ใช้เฉพาะตอนรันจากซอร์สเพื่อพัฒนา (ตัว .exe ใช้รูปที่เข้ารหัสฝังไว้ใน assets_blob.py)"""
+    return Path(getattr(config, "ICON_DIR", None) or Path(__file__).resolve().parent.parent / "icons")
+
+
+def _load_icon_image(stem: str):
+    """รูปไอคอนจากกล่องที่เข้ารหัส; ตอนรันจากซอร์สถ้าไม่มีในกล่องจะหาในโฟลเดอร์ icons/"""
+    im = assetbox.embedded_image(stem)
+    if im is not None or core.is_frozen():
+        return im
+    for ext in ICON_EXTS:
+        f = icon_dir() / f"{stem}{ext}"
+        if f.is_file():
+            try:
+                with Image.open(f) as raw:
+                    return raw.convert("RGBA")
+            except (OSError, ValueError):
+                return None
+    return None
 
 
 def load_top_icons() -> dict:
-    """โหลดไอคอนจาก icons/  คืน {ชื่อ: (รูปปกติ, รูปตอนโฮเวอร์)} เฉพาะอันที่มีไฟล์
+    """โหลดไอคอนปุ่มมุมขวาบน คืน {ชื่อ: (รูปปกติ, รูปตอนโฮเวอร์)} เฉพาะอันที่มีรูป
 
-    ชื่อไฟล์: gear.png, minimize.png, close.png
-    (ถ้าอยากให้โฮเวอร์เป็นอีกรูป ใส่ gear_hover.png ฯลฯ ได้ ไม่ใส่ก็ใช้รูปเดียวกันแล้วปรับความสว่างให้)
+    ชื่อรูป: gear, minimize, close (ใส่ gear_hover ฯลฯ ได้ถ้าอยากให้โฮเวอร์เป็นอีกรูป
+    ไม่ใส่ก็ใช้รูปเดียวกันแล้วปรับความสว่างให้) — แพ็กเข้า assets_blob.py ด้วย tools/pack_assets.py
     """
-    folder = icon_dir()
     out = {}
 
-    def find(stem):
-        for ext in ICON_EXTS:
-            f = folder / f"{stem}{ext}"
-            if f.is_file():
-                return f
-        return None
-
-    def prep(path):
-        with Image.open(path) as im:
-            im = im.convert("RGBA")
-        return im.resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
+    def prep(im):
+        return im.convert("RGBA").resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
 
     for name, (_box, stems) in TOP_ICONS.items():
         try:
-            base = next((f for st in stems if (f := find(st))), None)
+            base = next((im for st in stems if (im := _load_icon_image(st)) is not None), None)
             if base is None:
+                core.log(f"ไม่พบรูปไอคอน '{name}' -> ใช้ไอคอนที่วาดเอง")
                 continue
             normal = prep(base)
-            hov_file = next((f for st in stems if (f := find(st + "_hover"))), None)
-            if hov_file:
-                hover = prep(hov_file)
+            hov_img = next((im for st in stems if (im := _load_icon_image(st + "_hover")) is not None), None)
+            if hov_img is not None:
+                hover = prep(hov_img)
             else:
                 hover = normal
                 a = normal.getchannel("A").point(lambda v: int(v * ICON_IDLE_ALPHA))
                 normal = normal.copy()
                 normal.putalpha(a)
             out[name] = (ImageTk.PhotoImage(normal), ImageTk.PhotoImage(hover))
-        except (OSError, ValueError, tk.TclError):
-            continue   # ไฟล์เสีย -> ใช้ไอคอนวาดเอง
+        except (OSError, ValueError, tk.TclError) as e:
+            core.log(f"โหลดไอคอน '{name}' ไม่ได้: {e}")
+            continue   # รูปเสีย -> ใช้ไอคอนวาดเอง
     return out
 
 
@@ -131,11 +136,12 @@ class App:
         self.root.resizable(False, False)
         self.root.configure(bg=BG)
         self.root.overrideredirect(True)          # ไร้กรอบ ลากย้ายเองได้
-        try:                                      # ไอคอนหน้าต่าง/แถบงาน (วาดจาก art.make_icon)
-            self.icons = [ImageTk.PhotoImage(art.make_icon(n)) for n in (16, 32, 48, 256)]
+        self.win_icons = {}   # ขนาด -> HICON (Windows) เก็บไว้ไม่ให้ถูกทิ้ง
+        try:                                      # ไอคอนหน้าต่าง (รูปที่ฝังไว้ใน assets_blob.py)
+            self.icons = [ImageTk.PhotoImage(art.app_icon(n)) for n in (16, 32, 48, 256)]
             self.root.iconphoto(True, *self.icons)
-        except (tk.TclError, OSError):
-            pass
+        except (tk.TclError, OSError, ValueError) as e:
+            core.log(f"ตั้งไอคอนหน้าต่างไม่ได้: {e}")
         if sys.platform != "win32":
             self.root.bind("<Map>", self.on_map)  # กลับมาไร้กรอบหลังย่อหน้าต่าง
 
@@ -190,7 +196,8 @@ class App:
         self.draw_status()
 
         self.root.after(50, self.show_in_taskbar)
-        core.cleanup_old_launcher()
+        core.purge_legacy_images()
+        core.start_cleanup_old_launcher()
         core.record_launcher_path()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.poll)
@@ -202,8 +209,7 @@ class App:
     # ------------------------------------------------------------ พื้นหลัง
     def load_cached_bg(self):
         try:
-            with Image.open(core.data_dir() / "background_1.png") as im:
-                return im.convert("RGB")
+            return assetbox.read_image(core.data_dir() / "background_1.dat").convert("RGB")
         except (OSError, ValueError):
             return None
 
@@ -397,7 +403,37 @@ class App:
             self.root.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
 
     def hwnd(self):
-        return ctypes.windll.user32.GetParent(self.root.winfo_id())
+        return ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+
+    def apply_window_icon(self):
+        """Windows: ตั้งไอคอนแถบงาน/Alt-Tab ให้หน้าต่างตรงๆ (WM_SETICON)
+        หน้าต่างไร้กรอบที่ถูก withdraw/deiconify ไอคอนจาก iconphoto มักหายเป็นไอคอนเริ่มต้น"""
+        if sys.platform != "win32":
+            return
+        try:
+            from ctypes import wintypes
+            u = ctypes.windll.user32
+            u.CreateIconFromResourceEx.restype = ctypes.c_void_p
+            u.CreateIconFromResourceEx.argtypes = [ctypes.c_char_p, wintypes.DWORD, wintypes.BOOL,
+                                                   wintypes.DWORD, ctypes.c_int, ctypes.c_int,
+                                                   wintypes.UINT]
+            u.SendMessageW.restype = ctypes.c_void_p
+            u.SendMessageW.argtypes = [ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p]
+            targets = {self.hwnd(), self.root.winfo_id()}
+            for which, px in ((0, 32), (1, 256)):    # ICON_SMALL, ICON_BIG
+                h = self.win_icons.get(px)
+                if h is None:
+                    buf = io.BytesIO()
+                    art.app_icon(px).save(buf, "PNG")
+                    png = buf.getvalue()
+                    h = u.CreateIconFromResourceEx(png, len(png), True, 0x00030000, px, px, 0)
+                    if not h:
+                        continue
+                    self.win_icons[px] = h
+                for t in targets:
+                    u.SendMessageW(t, 0x0080, which, h)   # WM_SETICON
+        except (AttributeError, OSError, ValueError) as e:
+            core.log(f"ตั้งไอคอนแถบงานไม่ได้: {e}")
 
     def show_in_taskbar(self):
         """หน้าต่างไร้กรอบ (overrideredirect) ปกติไม่ขึ้นแถบงาน — บังคับให้เป็น App window"""
@@ -411,6 +447,8 @@ class App:
             u.SetWindowLongW(h, GWL_EXSTYLE, (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW)
             self.root.withdraw()                  # ต้องซ่อน-แสดงใหม่ Windows ถึงอัปเดตแถบงาน
             self.root.after(20, self.root.deiconify)
+            for ms in (150, 800):                 # ตั้งไอคอนหลังหน้าต่างโผล่กลับมาแล้ว
+                self.root.after(ms, self.apply_window_icon)
         except (AttributeError, OSError) as e:
             core.log(f"ตั้งค่าไอคอนแถบงานไม่ได้: {e}")
 
@@ -571,8 +609,7 @@ class App:
 
     def ev_bg(self, path):
         try:
-            with Image.open(path) as im:
-                self.set_background(im.convert("RGB"))
+            self.set_background(assetbox.read_image(path).convert("RGB"))
         except (OSError, ValueError) as e:
             core.log(f"ใช้พื้นหลังไม่ได้: {e}")
         self.draw_dynamic()
@@ -742,9 +779,9 @@ class App:
         """พื้นหลังโหลดจาก site/background.png ใน repo (เปลี่ยนรูปได้โดยไม่ต้อง build ใหม่)"""
         try:
             data = core.http_get(config.RAW_BASE + "background_1.png", bust_cache=True)
-            dest = core.data_dir() / "background_1.png"
-            if not dest.exists() or dest.read_bytes() != data:
-                dest.write_bytes(data)
+            dest = core.data_dir() / "background_1.dat"   # เก็บแบบเข้ารหัส
+            if assetbox.read_sealed(dest) != data:
+                assetbox.write_sealed(dest, data)
                 self.post("bg", str(dest))
         except Exception as e:  # noqa: BLE001
             core.log(f"โหลดพื้นหลังไม่ได้: {e}")
