@@ -202,7 +202,7 @@ class App:
     # ------------------------------------------------------------ พื้นหลัง
     def load_cached_bg(self):
         try:
-            with Image.open(core.data_dir() / "background.png") as im:
+            with Image.open(core.data_dir() / "background_1.png") as im:
                 return im.convert("RGB")
         except (OSError, ValueError):
             return None
