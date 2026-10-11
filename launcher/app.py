@@ -921,14 +921,14 @@ class App:
             if todo and not download:
                 # ยังไม่โหลดอะไร — แจ้งขนาดแล้วรอผู้เล่นกดปุ่มเอง
                 jobs = core.build_jobs(manifest, todo)
-                size = sum(j.pack["size"] for j in jobs)
+                size = sum(j.download_bytes for j in jobs)
                 self.post("need", (manifest["game_version"], len(todo), size,
                                    core.installed_ok(root)))
                 return
             if todo:
                 jobs = core.build_jobs(manifest, todo)
                 core.check_disk_space(root, jobs)
-                prog = core.Progress(sum(j.pack["size"] for j in jobs))
+                prog = core.Progress(sum(j.download_bytes for j in jobs))
                 stop = threading.Event()
 
                 def ticker():
