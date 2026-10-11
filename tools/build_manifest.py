@@ -28,6 +28,7 @@ from pathlib import Path
 import requests
 
 API = "https://api.github.com"
+CACHE_VERSION = 2  # เพิ่มเมื่อรูปแบบข้อมูลวิเคราะห์เปลี่ยน (cache เก่าจะถูกวิเคราะห์ใหม่)
 
 
 def sha256_file(p: Path) -> str:
@@ -114,7 +115,7 @@ def analyze(asset, path: Path) -> dict:
     sha = sha256_file(path)
     size = path.stat().st_size
     if not asset["name"].lower().endswith(".zip"):
-        return {"kind": "file", "sha256": sha, "size": size,
+        return {"kind": "file", "sha256": sha, "size": size, "v": CACHE_VERSION,
                 "files": [{"path": asset["name"], "sha256": sha, "size": size}]}
     files = []
     try:
@@ -135,8 +136,14 @@ def analyze(asset, path: Path) -> dict:
                 for c in iter(lambda: f.read(1024 * 1024), b""):
                     h.update(c)
                     n += len(c)
-            files.append({"path": name, "sha256": h.hexdigest(), "size": n})
-    return {"kind": "zip", "sha256": sha, "size": size, "files": files}
+            # off/csize/ctype = ตำแหน่ง+ขนาดบีบอัดของไฟล์ใน zip -> Launcher ดึงเฉพาะไฟล์ที่เปลี่ยนได้ (HTTP Range)
+            entry = {"path": name, "sha256": h.hexdigest(), "size": n,
+                     "off": info.header_offset, "csize": info.compress_size,
+                     "ctype": info.compress_type}
+            if info.flag_bits & 0x1:  # เข้ารหัส -> ดึงแยกไฟล์ไม่ได้
+                entry["enc"] = True
+            files.append(entry)
+    return {"kind": "zip", "sha256": sha, "size": size, "files": files, "v": CACHE_VERSION}
 
 
 def main():
@@ -205,7 +212,7 @@ def main():
                         key=lambda x: x["name"])
         for ast in assets:
             c = cache_in.get(ast["id"])
-            if c and c.get("size_asset") == ast["size"]:
+            if c and c.get("v") == CACHE_VERSION and c.get("size_asset") == ast["size"]:
                 info = c
                 print(f"  cache: {ast['name']}")
             else:
