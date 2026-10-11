@@ -157,7 +157,13 @@ def main():
     ap.add_argument("--asset-base", default=None, help="(โหมดทดสอบ) URL ฐานของโฟลเดอร์ข้างบน")
     a = ap.parse_args()
 
-    channels = json.loads(Path(a.config).read_text("utf-8")).get("channels", ["stable"])
+    cfg = json.loads(Path(a.config).read_text("utf-8"))
+    channels = cfg.get("channels", ["stable"])
+    game_exe = cfg.get("game_exe", "")
+    # GitHub เปลี่ยนช่องว่างในชื่อไฟล์ที่อัปโหลดเป็นจุด ("Ta Tu.exe" -> "Ta.Tu.exe")
+    # จึงแปลงชื่อไฟล์เดี่ยวกลับให้ตรงกับที่เกมต้องการ (เพิ่มกติกาเองได้ใน config.json: "asset_rename")
+    rename = {game_exe.replace(" ", "."): game_exe} if " " in game_exe else {}
+    rename.update(cfg.get("asset_rename", {}))
 
     repo = os.environ.get("GITHUB_REPOSITORY")
     if a.local_releases:
@@ -229,6 +235,9 @@ def main():
             packs.append({"id": ast["name"], "kind": info["kind"], "url": ast["url"],
                           "sha256": info["sha256"], "size": info["size"]})
             for f in info["files"]:
+                if info["kind"] == "file" and f["path"] in rename:
+                    print(f"  เปลี่ยนชื่อ: {f['path']} -> {rename[f['path']]}")
+                    f = {**f, "path": rename[f["path"]]}
                 if f["path"] in files:
                     print(f"  ทับไฟล์: {f['path']}  ({files[f['path']]['pack']} -> {ast['name']})")
                 files[f["path"]] = {**f, "pack": ast["name"]}
@@ -237,6 +246,13 @@ def main():
             continue
         used = {f["pack"] for f in files.values()}
         packs = [p for p in packs if p["id"] in used]  # ตัดแพ็กที่ถูกทับจนไม่เหลือไฟล์
+        if game_exe and game_exe not in files:
+            print(f"::warning::[{channel}] ไม่พบ '{game_exe}' ในไฟล์ของ Release {rel['tag']} "
+                  f"(Launcher จะเปิดเกมไม่ได้) — เช็กชื่อไฟล์ exe ที่แนบ")
+        data_dir = (game_exe[:-4] if game_exe.lower().endswith(".exe") else game_exe) + "_Data/"
+        if game_exe and not any(p.startswith(data_dir) for p in files):
+            print(f"::warning::[{channel}] ไม่พบโฟลเดอร์ '{data_dir}' ในแพ็ก zip — Unity ต้องการโฟลเดอร์นี้"
+                  f"ชื่อตรงกับ exe (zip ข้างในใช้ช่องว่างได้ ไม่ถูกเปลี่ยนเป็นจุด)")
         manifest = {"game_version": version, "channel": channel, "tag": rel["tag"],
                     "packs": packs, "files": sorted(files.values(), key=lambda f: f["path"]),
                     "delete": delete}
