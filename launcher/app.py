@@ -27,7 +27,38 @@ import config
 import core
 
 W, H = art.W, art.H
-FONT = "Segoe UI"
+
+
+def setup_font() -> str:
+    """โหลดฟอนต์ LINE Seed Sans TH (ฝังอยู่ใน assets_blob.py) เข้าโปรเซสนี้เท่านั้น ไม่ติดตั้งลงเครื่องผู้เล่น
+    คืนชื่อฟอนต์ที่ใช้ได้ — ถ้าโหลดไม่ได้ (ไม่ใช่ Windows / ไม่มีไฟล์) ใช้ Segoe UI แทน"""
+    global _font_buf
+    fallback = "Segoe UI"
+    if sys.platform != "win32":
+        return fallback
+    data = assetbox.embedded_bytes(FONT_BLOB)
+    if data is None and not core.is_frozen():  # รันจากซอร์ส: อ่านจากโฟลเดอร์ fonts/ ได้
+        f = Path(__file__).resolve().parent.parent / "fonts" / FONT_FILE
+        data = f.read_bytes() if f.is_file() else None
+    if not data:
+        core.log("ไม่พบฟอนต์ที่ฝังไว้ -> ใช้ Segoe UI")
+        return fallback
+    try:
+        _font_buf = ctypes.create_string_buffer(data, len(data))  # ต้องเก็บไว้ตลอดอายุโปรแกรม
+        n = ctypes.c_uint32(0)
+        h = ctypes.windll.gdi32.AddFontMemResourceEx(_font_buf, len(data), None, ctypes.byref(n))
+        if h and n.value:
+            return FONT_FAMILY
+    except (AttributeError, OSError, ctypes.ArgumentError) as e:
+        core.log(f"โหลดฟอนต์ไม่ได้: {e}")
+    return fallback
+
+
+FONT_FAMILY = "LINE Seed Sans TH App"   # ชื่อ family ในไฟล์ฟอนต์
+FONT_FILE = "LINESeedSansTH_A_Rg.ttf"   # ไฟล์ในโฟลเดอร์ fonts/ (pack_assets.py แพ็กเข้า assets_blob.py ให้)
+FONT_BLOB = "font_" + Path(FONT_FILE).stem.lower()
+_font_buf = None
+FONT = setup_font()
 FG, MUTED, SOFT = "#ffffff", "#ffffff", "#ffffff"
 ACCENT, ACCENT_HOVER, ERR = "#ffd900", "#ffe64d", "#ff8a8a"
 SHADOW = "#143244"
@@ -49,7 +80,8 @@ TOP_ICONS = {
     "close": ((1222, 14, 1262, 50), ("close", "exit")),
 }
 ICON_SIZE = 24          # ขนาดรูปไอคอนที่แสดง (px) — ปรับได้
-ICON_IDLE_ALPHA = 0.78  # ความทึบตอนปกติ (ตอนโฮเวอร์จะ 100%) ใช้เมื่อไม่มีไฟล์ *_hover
+ICON_COLOR = (74, 80, 88)        # สีเทาเข้มของไอคอนมุมขวาบนตอนปกติ  (#4a5058)
+ICON_HOVER_COLOR = (34, 38, 43)  # สีตอนโฮเวอร์ (เข้มขึ้น)            (#22262b)
 ICON_EXTS = (".png", ".webp", ".ico")
 
 
@@ -82,8 +114,12 @@ def load_top_icons() -> dict:
     """
     out = {}
 
-    def prep(im):
-        return im.convert("RGBA").resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
+    def prep(im, rgb):
+        """ย่อรูปแล้วย้อมเป็นสีเทาเข้ม (คงรูปทรงจากช่อง alpha ของไอคอน)"""
+        im = im.convert("RGBA").resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
+        out = Image.new("RGBA", im.size, rgb + (0,))
+        out.putalpha(im.getchannel("A"))
+        return out
 
     for name, (_box, stems) in TOP_ICONS.items():
         try:
@@ -91,20 +127,17 @@ def load_top_icons() -> dict:
             if base is None:
                 core.log(f"ไม่พบรูปไอคอน '{name}' -> ใช้ไอคอนที่วาดเอง")
                 continue
-            normal = prep(base)
-            hov_img = next((im for st in stems if (im := _load_icon_image(st + "_hover")) is not None), None)
-            if hov_img is not None:
-                hover = prep(hov_img)
-            else:
-                hover = normal
-                a = normal.getchannel("A").point(lambda v: int(v * ICON_IDLE_ALPHA))
-                normal = normal.copy()
-                normal.putalpha(a)
+            normal = prep(base, ICON_COLOR)
+            hover = prep(base, ICON_HOVER_COLOR)
             out[name] = (ImageTk.PhotoImage(normal), ImageTk.PhotoImage(hover))
         except (OSError, ValueError, tk.TclError) as e:
             core.log(f"โหลดไอคอน '{name}' ไม่ได้: {e}")
             continue   # รูปเสีย -> ใช้ไอคอนวาดเอง
     return out
+
+
+def _hex(rgb) -> str:
+    return "#%02x%02x%02x" % tuple(rgb)
 
 
 def pill(c: tk.Canvas, box, fill, tag):
@@ -254,7 +287,7 @@ class App:
 
         # ไอคอนมุมขวาบน: ตั้งค่า / ย่อ / ปิด  (ใช้รูปจาก icons/ ถ้ามี ไม่งั้นวาดเอง)
         def icon_color(name):
-            return FG if hv == name else MUTED
+            return _hex(ICON_HOVER_COLOR) if hv == name else _hex(ICON_COLOR)
 
         def draw_fallback(name):
             col = icon_color(name)
@@ -720,6 +753,7 @@ class App:
             return
         win = tk.Toplevel(self.root)
         win.title("Setting")
+        win.option_add("*Font", (FONT, -14))
         win.configure(bg=BG, padx=20, pady=16)
         win.resizable(False, False)
         win.transient(self.root)
