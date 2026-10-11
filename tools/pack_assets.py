@@ -47,6 +47,11 @@ def main() -> int:
             if hasattr(im, "ico"):
                 im.size = sizes[-1]  # เลือกขนาดใหญ่สุดในไฟล์ .ico
             items["app"] = png_bytes(im)
+    font_dir = ROOT / "fonts"   # ฟอนต์ของ Launcher -> เก็บเป็น font_<ชื่อไฟล์> (ไบต์ดิบของ .ttf)
+    if font_dir.is_dir():
+        for f in sorted(font_dir.iterdir()):
+            if f.suffix.lower() == ".ttf" and f.is_file():
+                items["font_" + f.stem.lower()] = f.read_bytes()
     if not items:
         print("ไม่พบ icons/ หรือ icon.ico — ใช้ assets_blob.py เดิม (ถ้ามี)")
         return 0
