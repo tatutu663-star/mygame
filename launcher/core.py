@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import zipfile
+import zlib
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
@@ -333,10 +334,35 @@ def plan_update(manifest: dict, root: Path, state: InstallState,
     return todo
 
 
+# ค่าประมาณ "ต้นทุน" ของการขอไฟล์ 1 ไฟล์แยก (เวลาเชื่อมต่อ/redirect) คิดเป็นไบต์เทียบกับโหลด zip ทั้งก้อน
+PARTIAL_REQUEST_COST = 16 * 1024
+PARTIAL_MAX_RATIO = 0.7      # ถ้าโหลดแบบแยกไฟล์ประหยัดไม่ถึง 30% ของ zip -> โหลด zip ทั้งก้อนแทน (ต่อเนื่อง/ง่ายกว่า)
+PARTIAL_WORKERS = 6
+LOCAL_HEADER_GUESS = 256     # ส่วนเกินที่ขอเผื่อชื่อไฟล์/extra field ใน local header
+
+
 @dataclass
 class Job:
     pack: dict
     items: list  # ไฟล์ที่ต้องดึงจากแพ็กนี้
+    partial: bool = False  # True = ดึงเฉพาะไฟล์ที่เปลี่ยนจากใน zip (HTTP Range) ไม่โหลด zip ทั้งก้อน
+
+    @property
+    def download_bytes(self) -> int:
+        """จำนวนไบต์ที่จะโหลดจริง (ใช้แสดงผล/คำนวณ progress)"""
+        if self.partial:
+            return sum(_member_bytes(it) for it in self.items)
+        return self.pack["size"]
+
+
+def _can_partial(it: dict) -> bool:
+    """ไฟล์นี้ดึงจากใน zip ตรงๆ ได้ไหม (manifest ต้องมีตำแหน่งไฟล์ใน zip และบีบอัดแบบ store/deflate)"""
+    return (isinstance(it.get("off"), int) and isinstance(it.get("csize"), int)
+            and it.get("ctype") in (0, 8) and not it.get("enc") and it["off"] >= 0)
+
+
+def _member_bytes(it: dict) -> int:
+    return it["csize"] + 30 + len(it["path"].encode("utf-8"))
 
 
 def build_jobs(manifest: dict, todo: list) -> list:
@@ -344,12 +370,20 @@ def build_jobs(manifest: dict, todo: list) -> list:
     by: dict = {}
     for it in todo:
         by.setdefault(it["pack"], []).append(it)
-    return [Job(packs[k], v) for k, v in by.items()]
+    jobs = []
+    for k, v in by.items():
+        job = Job(packs[k], v)
+        if job.pack["kind"] == "zip" and all(_can_partial(it) for it in v):
+            cost = sum(_member_bytes(it) + PARTIAL_REQUEST_COST for it in v)
+            job.partial = cost < job.pack["size"] * PARTIAL_MAX_RATIO
+        jobs.append(job)
+    return jobs
 
 
 def check_disk_space(root: Path, jobs: list, workers: int = 3) -> None:
     need = sum(it["size"] for j in jobs for it in j.items)  # ไฟล์ที่แตกออกมาแล้ว
-    zips = sorted((j.pack["size"] for j in jobs if j.pack["kind"] == "zip"), reverse=True)
+    zips = sorted((j.pack["size"] for j in jobs if j.pack["kind"] == "zip" and not j.partial),
+                  reverse=True)
     need += sum(zips[:workers])  # zip ที่พักไว้พร้อมกัน (ลบหลังแตกไฟล์)
     probe = root
     while not probe.exists() and probe != probe.parent:
@@ -527,19 +561,136 @@ def run_job(job: Job, root: Path, progress: Progress, cancel: threading.Event,
         zpath.unlink(missing_ok=True)
 
 
+class RangeUnsupported(Exception):
+    """เซิร์ฟเวอร์ไม่รองรับ HTTP Range -> ต้องถอยไปโหลด zip ทั้งก้อน"""
+
+
+def _read_exact(raw, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = raw.read(n - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf)
+
+
+def download_member(pack: dict, it: dict, root: Path, progress: Progress,
+                    cancel: threading.Event) -> None:
+    """ดึงไฟล์เดียวจากใน zip บน Release โดยขอเฉพาะช่วงไบต์ของไฟล์นั้น (HTTP Range)
+    -> แตก/คลายบีบอัดทันที -> ตรวจขนาด+hash กับ manifest -> เปลี่ยนชื่อเป็นไฟล์จริง"""
+    dest = safe_join(root, it["path"])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    off, csize, want = it["off"], it["csize"], it["size"]
+    name_len = len(it["path"].encode("utf-8"))
+    guess = LOCAL_HEADER_GUESS
+    url = check_url(pack["url"])
+    last = None
+    for attempt in range(4):
+        if cancel.is_set():
+            raise Cancelled()
+        counted = 0
+        try:
+            end = off + 30 + name_len + guess + csize - 1
+            headers = {"Range": f"bytes={off}-{end}", "Accept-Encoding": "identity"}
+            with _session.get(url, headers=headers, stream=True, timeout=20) as r:
+                if r.status_code == 200:  # ส่งทั้งไฟล์กลับมา = ไม่รองรับ Range
+                    raise RangeUnsupported()
+                r.raise_for_status()
+                if r.status_code != 206:
+                    raise OSError(f"สถานะ HTTP ไม่คาดคิด {r.status_code}")
+                head = _read_exact(r.raw, 30)
+                counted += len(head)
+                progress.add(len(head))
+                if len(head) < 30 or head[:4] != b"PK\x03\x04":
+                    raise OSError("local header ของไฟล์ใน zip ไม่ถูกต้อง")
+                n_len = int.from_bytes(head[26:28], "little")
+                e_len = int.from_bytes(head[28:30], "little")
+                skip = n_len + e_len
+                if skip > name_len + guess:  # extra field ใหญ่กว่าที่เผื่อไว้ -> ขอเผื่อเพิ่มรอบหน้า
+                    guess = skip - name_len + 64
+                    raise OSError("extra field ใหญ่กว่าที่คาด ลองใหม่")
+                counted += len(_read_exact(r.raw, skip))
+                progress.add(skip)
+                dec = zlib.decompressobj(-15) if it["ctype"] == 8 else None
+                h, got, left = hashlib.sha256(), 0, csize
+                with open(part, "wb") as out:
+                    while left > 0:
+                        if cancel.is_set():
+                            raise Cancelled()
+                        chunk = r.raw.read(min(CHUNK, left))
+                        if not chunk:
+                            raise OSError("การเชื่อมต่อหลุดกลางไฟล์")
+                        left -= len(chunk)
+                        counted += len(chunk)
+                        progress.add(len(chunk))
+                        data = dec.decompress(chunk) if dec else chunk
+                        got += len(data)
+                        if got > want:  # กัน zip bomb
+                            raise LauncherError(f"ไฟล์ใหญ่กว่าที่ระบุ: {it['path']}")
+                        out.write(data)
+                        h.update(data)
+                    if dec:
+                        data = dec.flush()
+                        got += len(data)
+                        out.write(data)
+                        h.update(data)
+            if got != want or h.hexdigest() != it["sha256"]:
+                raise OSError("ขนาดหรือ hash ไม่ตรง")
+            try:
+                os.replace(part, dest)
+            except PermissionError:
+                raise LauncherError(f"เขียนไฟล์ไม่ได้ (เกมเปิดอยู่หรือไม่?): {it['path']}")
+            return
+        except (Cancelled, LauncherError, RangeUnsupported):
+            part.unlink(missing_ok=True)
+            raise
+        except (requests.RequestException, OSError, zlib.error) as e:
+            last = e
+            part.unlink(missing_ok=True)
+            log(f"โหลด {it['path']} (แบบแยกไฟล์) ครั้งที่ {attempt + 1} ล้มเหลว: {e}")
+            progress.add(-counted)
+            time.sleep(1 + attempt)
+    raise LauncherError(f"โหลดไม่สำเร็จ: {it['path']} ({last})")
+
+
 def run_jobs(jobs: list, root: Path, progress: Progress, cancel: threading.Event,
              on_stage=None, workers: int = 3) -> None:
     if not jobs:
         return
-    jobs = sorted(jobs, key=lambda j: -j.pack["size"])
+    jobs = sorted(jobs, key=lambda j: -j.download_bytes)
+    if all(j.partial for j in jobs):
+        workers = PARTIAL_WORKERS
+    no_range: dict = {}  # pack id -> ไฟล์ที่ขอแบบ Range ไม่ได้ (ต้องถอยไปโหลด zip ทั้งก้อน)
+    lock = threading.Lock()
+
+    def member_task(job, it):
+        try:
+            download_member(job.pack, it, root, progress, cancel)
+        except RangeUnsupported:
+            with lock:
+                no_range.setdefault(job.pack["id"], (job.pack, []))[1].append(it)
+
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(run_job, j, root, progress, cancel, on_stage) for j in jobs]
+        futs = []
+        for j in jobs:
+            if j.partial:
+                futs += [ex.submit(member_task, j, it) for it in j.items]
+            else:
+                futs.append(ex.submit(run_job, j, root, progress, cancel, on_stage))
         try:
             for f in as_completed(futs):
                 f.result()
         except BaseException:
             cancel.set()  # หยุดงานอื่นที่เหลือ
             raise
+    if no_range:  # เซิร์ฟเวอร์ไม่รองรับ Range -> โหลด zip ทั้งก้อนเฉพาะแพ็กที่จำเป็น
+        log("เซิร์ฟเวอร์ไม่รองรับ Range ถอยไปโหลด zip ทั้งแพ็ก")
+        fallback = [Job(p, its) for p, its in no_range.values()]
+        progress.total += sum(j.pack["size"] for j in fallback)
+        run_jobs(fallback, root, progress, cancel, on_stage, workers=3)
+        return
     try:
         (root / TMP_DIR).rmdir()
     except OSError:
