@@ -1,6 +1,6 @@
 {
-  "app_name": "Ta Tu",
-  "game_exe": "Ta Tu.exe",
+  "app_name": "Ta.Tu",
+  "game_exe": "Ta.Tu.exe",
   "game_args": [],
   "channels": [
     "stable",
