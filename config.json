@@ -4,7 +4,8 @@
   "game_args": [],
   "channels": [
     "stable",
-    "beta"
+    "beta",
+    "test"
   ],
   "default_channel": "stable",
   "min_launcher_version": "1.0.0",
