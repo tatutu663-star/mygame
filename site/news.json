@@ -2,7 +2,7 @@
   "items": [
     {"title": "test", "image": "banners/br_test.png", "link": "https://youtu.be/gUpOEmKf7bM"},
     {"title": "กำลัง test launcher อยู่อาจจะมีอาการค้างอยู่บ้าง", "image": "banners/br_test.png", "link": ""},
-    {"title": "test", "image": "banners/br_test.png", "link": ""},
+    {"title": "*เกมยังอยู่ระหว่างการพัฒนา และยังไม่ใช่เวอร์ชันสำหรับใช้งานจริง", "image": "banners/br_test.png", "link": ""},
     {"title": "test", "image": "banners/br_test.png", "link": ""}
   ]
 }
