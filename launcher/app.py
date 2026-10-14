@@ -1,6 +1,6 @@
 """หน้าต่าง Launcher (Tkinter) — รันด้วย:  python app.py
 
-หน้าตา: หน้าต่างไร้กรอบขนาด 1280x720 พื้นหลังเต็มจอ ชื่อเกมใหญ่ด้านซ้าย
+หน้าตา: หน้าต่างไร้กรอบขนาด 1728x735 (กำหนดที่ art.W / art.H) พื้นหลังเต็มจอ ชื่อเกมใหญ่ด้านซ้าย
 การ์ดข่าวกระจกฝ้ามุมซ้ายล่าง ปุ่มเหลืองทรงเม็ดยาที่มุมขวาล่าง
 ไอคอนตั้งค่า/ย่อ/ปิดมุมขวาบน — ทั้งหมดวาดบน Canvas ใบเดียว
 """
@@ -27,6 +27,7 @@ import config
 import core
 
 W, H = art.W, art.H
+DX, DY = art.DX, art.DY   # ส่วนต่างจากดีไซน์เดิม 1280x720: ของชิดขวาเลื่อนตาม DX, ชิดล่างเลื่อนตาม DY
 
 
 def setup_font() -> str:
@@ -63,21 +64,21 @@ FG, MUTED, SOFT = "#ffffff", "#ffffff", "#ffffff"
 ACCENT, ACCENT_HOVER, ERR = "#ffd900", "#ffe64d", "#ff8a8a"
 SHADOW = "#143244"
 PANEL, BG = "#161b22", "#0e1116"   # ใช้กับหน้าต่างตั้งค่า
-BTN = (935, 607, 1223, 663)        # ปุ่มหลัก (x1, y1, x2, y2)
+BTN = (935 + DX, 607 + DY, 1223 + DX, 663 + DY)        # ปุ่มหลัก (x1, y1, x2, y2)
 NEWS_ROWS = 3                       # จำนวนบรรทัดข่าวที่เห็นพร้อมกัน (เลื่อนดูที่เหลือได้)
-ROW_Y0, ROW_DY = 598, 24
+ROW_Y0, ROW_DY = 598 + DY, 24
 _CFG = getattr(config, "_cfg", {}) or {}
 NEWS_MAX = max(1, int(_CFG.get("news_max", 30)))                      # ข่าวสูงสุดที่แสดง
 NEWS_REFRESH = max(10, int(_CFG.get("news_refresh_seconds", 30)))     # เช็กข่าวใหม่ทุกกี่วินาที
 NEWS_PAUSE = 20                     # ผู้เล่นเลื่อน/กดข่าวแล้ว หยุดสไลด์อัตโนมัติกี่วินาที
-SB_Y1, SB_Y2 = 590, 654             # ช่วงแนวตั้งของแถบเลื่อน
+SB_Y1, SB_Y2 = 590 + DY, 654 + DY             # ช่วงแนวตั้งของแถบเลื่อน
 
 # ไอคอนมุมขวาบน: ชื่อ -> (กล่องคลิก x1,y1,x2,y2, ชื่อไฟล์ที่ใช้หา)
 # วางรูปไว้ที่โฟลเดอร์ icons/ (รากโปรเจกต์) ถ้าไม่มีไฟล์จะวาดไอคอนแบบเดิมให้เอง
 TOP_ICONS = {
-    "gear":  ((1136, 14, 1174, 50), ("gear", "settings", "setting")),
-    "min":   ((1180, 14, 1216, 50), ("minimize", "min")),
-    "close": ((1222, 14, 1262, 50), ("close", "exit")),
+    "gear":  ((1136 + DX, 14, 1174 + DX, 50), ("gear", "settings", "setting")),
+    "min":   ((1180 + DX, 14, 1216 + DX, 50), ("minimize", "min")),
+    "close": ((1222 + DX, 14, 1262 + DX, 50), ("close", "exit")),
 }
 ICON_SIZE = 24          # ขนาดรูปไอคอนที่แสดง (px) — ปรับได้
 ICON_COLOR = (74, 80, 88)        # สีเทาเข้มของไอคอนมุมขวาบนตอนปกติ  (#4a5058)
@@ -292,13 +293,13 @@ class App:
         def draw_fallback(name):
             col = icon_color(name)
             if name == "gear":
-                c.create_oval(1146, 23, 1164, 41, outline=col, width=2, tags="dyn")
-                c.create_oval(1151, 28, 1159, 36, outline=col, width=2, tags="dyn")
+                c.create_oval(1146 + DX, 23, 1164 + DX, 41, outline=col, width=2, tags="dyn")
+                c.create_oval(1151 + DX, 28, 1159 + DX, 36, outline=col, width=2, tags="dyn")
             elif name == "min":
-                c.create_line(1190, 32, 1206, 32, fill=col, width=2, tags="dyn")
+                c.create_line(1190 + DX, 32, 1206 + DX, 32, fill=col, width=2, tags="dyn")
             else:
-                c.create_line(1235, 24, 1251, 40, fill=col, width=2, tags="dyn")
-                c.create_line(1251, 24, 1235, 40, fill=col, width=2, tags="dyn")
+                c.create_line(1235 + DX, 24, 1251 + DX, 40, fill=col, width=2, tags="dyn")
+                c.create_line(1251 + DX, 24, 1235 + DX, 40, fill=col, width=2, tags="dyn")
 
         actions = {"gear": self.open_settings, "min": self.minimize, "close": self.on_close}
         for name, (box, _stems) in TOP_ICONS.items():
@@ -322,12 +323,12 @@ class App:
         if item:
             self.hits.append((x1, y1, x2, y1 + art.THUMB_SIZE[1], "thumb",
                               lambda i=self.news_idx: self.open_link(i)))
-        c.create_text(x1 + 8, 567, text="News", anchor="w", fill=FG, font=(FONT, -17, "bold"),
+        c.create_text(x1 + 8, 567 + DY, text="News", anchor="w", fill=FG, font=(FONT, -17, "bold"),
                       tags="dyn")
-        c.create_line(x1 + 8, 583, x1 + 36, 583, fill=ACCENT, width=2, tags="dyn")
+        c.create_line(x1 + 8, 583 + DY, x1 + 36, 583 + DY, fill=ACCENT, width=2, tags="dyn")
         n = len(self.news)
         if n > 1:
-            c.create_text(x2 - 14, 567, text=f"{self.news_idx + 1}/{n}", anchor="e", fill=SOFT,
+            c.create_text(x2 - 14, 567 + DY, text=f"{self.news_idx + 1}/{n}", anchor="e", fill=SOFT,
                           font=(FONT, -13), tags="dyn")
         self.news_top = max(0, min(self.news_top, max(0, n - NEWS_ROWS)))
         scroll = n > NEWS_ROWS
@@ -378,9 +379,9 @@ class App:
 
         # ลิงก์เล็กใต้ปุ่ม + เลขเวอร์ชัน
         col = FG if hv == "repair" else SOFT
-        c.create_text((bx1 + bx2) // 2, 690, text="ตรวจสอบ/ซ่อมแซมไฟล์", fill=col,
+        c.create_text((bx1 + bx2) // 2, 690 + DY, text="ตรวจสอบ/ซ่อมแซมไฟล์", fill=col,
                       font=(FONT, -13, "underline" if hv == "repair" else "normal"), tags="dyn")
-        self.hits.append((bx1 + 60, 678, bx2 - 60, 702, "repair", self.repair))
+        self.hits.append((bx1 + 60, 678 + DY, bx2 - 60, 702 + DY, "repair", self.repair))
         c.create_text(W - 18, H - 12, text=f"Launcher v{config.LAUNCHER_VERSION}", anchor="e",
                       fill=SOFT, font=(FONT, -11), tags="dyn")
 
@@ -388,17 +389,17 @@ class App:
         c = self.canvas
         c.delete("stat")
         x = 485
-        self.text(x, 622, self.status, 20, fill=self.status_color, bold=True, tags="stat")
+        self.text(x, 622 + DY, self.status, 20, fill=self.status_color, bold=True, tags="stat")
         if self.progress is not None:
-            w = 410
-            c.create_line(x, 648, x + w, 648, fill="#27495a", width=6, capstyle="round",
+            w = BTN[0] - 40 - x      # ยืดแถบตามความกว้างหน้าต่าง (เว้นช่องว่างก่อนถึงปุ่ม)
+            c.create_line(x, 648 + DY, x + w, 648 + DY, fill="#27495a", width=6, capstyle="round",
                           tags="stat")
             frac = max(0.0, min(1.0, self.progress))
             if frac > 0:
-                c.create_line(x, 648, x + max(1, w * frac), 648, fill=ACCENT, width=6,
+                c.create_line(x, 648 + DY, x + max(1, w * frac), 648 + DY, fill=ACCENT, width=6,
                               capstyle="round", tags="stat")
         if self.detail:
-            self.text(x, 667, self.detail, 13, fill=MUTED, tags="stat")
+            self.text(x, 667 + DY, self.detail, 13, fill=MUTED, tags="stat")
 
     # ------------------------------------------------------------ เมาส์ / หน้าต่าง
     def hit(self, x, y):
