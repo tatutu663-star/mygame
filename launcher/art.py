@@ -10,8 +10,9 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 import assetbox
 
-W, H = 1280, 720
-CARD = (57, 365, 441, 658)   # x1, y1, x2, y2 ของการ์ดข่าว
+W, H = 1728, 735             # ขนาดหน้าต่าง (ปรับที่นี่ที่เดียว)
+DX, DY = W - 1280, H - 720   # ส่วนต่างจากดีไซน์เดิม 1280x720 — ของที่ชิดขวา/ชิดล่างขยับตามนี้
+CARD = (57, 365 + DY, 441, 658 + DY)   # x1, y1, x2, y2 ของการ์ดข่าว (ชิดล่าง)
 CARD_RADIUS = 14
 THUMB_SIZE = (CARD[2] - CARD[0], 176)
 
